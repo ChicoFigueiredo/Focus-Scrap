@@ -84,6 +84,58 @@ sem legenda. Baixar a legenda pronta é mais barato e mais fiel que Whisper.
 
 Sem DRM aparente (hls.js puro) — `yt-dlp` baixa vídeo e legenda direto do m3u8.
 
+## Navegação do accordion (é ela que revela o material)
+
+As URLs de PDF e livro **não estão em lugar nenhum da API** — só aparecem
+quando se clica a lesson e o painel da esquerda troca. Daí `src/lesson.ts`
+navegar de verdade. A estrutura do accordion, dentro de um scroll-area do Radix:
+
+```html
+<button>  <span class="text-sm font-medium">Marketing e o Ambiente de Negócio</span>
+          <span class="text-xs text-muted-foreground">3 aulas</span>   ← MÓDULO
+<button>  <span class="text-left break-words flex-1">Vídeo Aula</span> ← LESSON
+```
+
+Distinção usada: **módulo é o botão que exibe "N aulas"; o resto é lesson.**
+Não se usa classe Tailwind como seletor — elas mudam a cada build.
+
+Armadilhas encontradas:
+
+- A página tem **vários** `[data-radix-scroll-area-viewport]`; o do menu lateral
+  vem antes. Filtra-se pelo que contém "N aulas".
+- `waitUntil: "networkidle"` **nunca resolve**: o player HLS baixa segmentos
+  continuamente. Espera-se o texto "Conteúdo do Curso" aparecer.
+- O 1º módulo já vem expandido — clicar nele fecharia. Só se clica quando não há
+  lesson visível; e recolhe-se ao terminar, senão a contagem do próximo confunde.
+- O slug do aluno **não** está no cookie `@faculdadefocus:slug` (esse é o da
+  instituição, "faculdadefocus"). Deduz-se do redirect de `/aluno`.
+- O player da lesson anterior continua baixando depois da troca, e respostas
+  atrasadas caem no balde errado — foi assim que um módulo ganhou a legenda do
+  vizinho. Por isso a legenda é **derivada do manifesto**, não lida da rede.
+
+## Formatos de lesson (12/12 classificadas na disciplina 603)
+
+| Lesson | Tipo | Como capturar |
+|---|---|---|
+| Vídeo Aula | `video` | playlist do CDN → N vídeos; manifesto HLS por vídeo |
+| Material em PDF | `pdf` | **download direto** |
+| Livro Digital | `livro` | visualizador paginado — **não é arquivo único** |
+
+```
+Material em PDF
+  https://scorm.onilearning.com.br/conteudo/componente.php
+      ?id=<n>&instituicao=337&componente=<md5>&saida=arquivo&estudante=
+  → 200 application/pdf, sem auth. Verificado: 3,2 MB, 21 páginas, %PDF-1.7.
+
+Livro Digital
+  …/componente.php?id=<n>&instituicao=337&onepage=<md5>&estudante=
+  → HTML paginado; as páginas vêm como imagem em
+    imagem.php?Arquivo=<n>&Altura=2000&Largura=2000&Token=<t>
+```
+
+Confirmado que o `<N>` de `<slug>_videos_<N>.html` é a **posição do módulo**:
+módulos 1–4 da disciplina 603 deram `_videos_1` … `_videos_4`.
+
 ## Determinismo e o papel do agente
 
 Quase tudo acima é regex sobre HTML estático. O agente `gpt-4o-mini` não deve
@@ -102,15 +154,22 @@ assinatura não mudar, não há chamada de LLM.
 
 ## Restrição
 
-**Nunca acessar provas.** `GET /exams`, "Fazer prova", "Refazer" e qualquer rota
-com `prova|avalia|simulad|exame|question` ficam fora — inclusive nos probes.
+**Nunca acessar provas.** Vale para `GET /exams`, "Fazer prova", "Refazer",
+"Simulado" e "Questionário" — em código e em investigação manual. O guarda é
+`PROIBIDO` em `src/lesson.ts`, aplicado a nome de módulo, nome de lesson e URL,
+com teste de regressão em `tests/lesson.test.ts`.
+
+> A primeira versão do padrão usava `exame` e deixava passar `/exams` — o
+> endpoint real. O teste pegou. Por isso o padrão é `exam`, sem o "e" final.
 
 ## Em aberto
 
-- **URLs dos PDFs** ("Material em PDF" e "Livro Digital"). A lista de lessons é
-  accordion; clique simples no texto não revelou link. Falta expandir a seção e
-  observar a requisição.
-- Se `<slug>_videos_<N>.html` usa mesmo `N` = posição do módulo (verificado só
-  no módulo 1 de uma disciplina).
-- As 8 disciplinas restantes têm `external_url_content` vazio — descobrir se a
-  playlist existe mesmo assim ou se o conteúdo vem por outra via.
+- **Livro Digital** é visualizador paginado por imagem, não arquivo. Falta
+  decidir: iterar páginas e montar PDF, ou procurar uma saída direta (o
+  `componente.php` aceita `saida=arquivo` no Material em PDF — talvez aceite
+  algo equivalente aqui).
+- As outras 8 disciplinas têm `external_url_content` vazio. A navegação do
+  accordion não depende desse campo, então provavelmente funcionam igual — mas
+  só foi verificada a disciplina 603 (4 módulos, 12 lessons).
+- Quantos vídeos por playlist nas demais disciplinas, e se alguma foge do trio
+  Vídeo Aula / Material em PDF / Livro Digital.
