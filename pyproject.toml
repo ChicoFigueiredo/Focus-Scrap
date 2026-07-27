@@ -1,0 +1,36 @@
+[project]
+name = "focus-scrap"
+version = "0.1.0"
+description = "Workers de mídia do focus-scrap: download (yt-dlp) e transcrição (faster-whisper)."
+requires-python = ">=3.12"
+
+# Leves — instalam rápido em qualquer máquina.
+dependencies = [
+    "yt-dlp>=2026.7",   # DEVE ficar atualizado; versão velha quebra no player do YouTube
+    "curl_cffi>=0.7",   # impersonation exigida pelo yt-dlp atual
+    "requests>=2.31",
+    "pypdf>=5.0",       # extração de texto dos PDFs (ebooks/slides)
+]
+
+[project.optional-dependencies]
+# Pesado (~2.5 GB com CUDA). A máquina do Chico já tem torch+faster-whisper no
+# Python do sistema — só rode `uv sync --extra gpu` se quiser o venv autossuficiente.
+gpu = [
+    "faster-whisper>=1.0",
+    "torch",
+]
+
+[tool.uv]
+# Cache do uv fica em ext4 e o projeto em /mnt/d (drvfs): hardlink não funciona
+# entre os dois filesystems.
+link-mode = "copy"
+
+[tool.hatch.build.targets.wheel]
+packages = ["py/focus"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 100

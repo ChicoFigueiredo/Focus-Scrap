@@ -1,0 +1,29 @@
+{
+  "name": "focus-scrap",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Captura os materiais de estudo da Faculdade Focus (vídeos, slides, ebooks), transcreve e legenda, e organiza no disco de estudo.",
+  "type": "module",
+  "scripts": {
+    "login": "bun run src/cli.ts login",
+    "scan": "bun run src/cli.ts scan",
+    "scrape": "bun run src/cli.ts scrape",
+    "panel": "bun run src/cli.ts panel",
+    "status": "bun run src/cli.ts status",
+    "media": "uv run python -m focus.worker",
+    "media:no-gpu": "uv run python -m focus.worker --no-transcribe",
+    "setup": "bun install && bun run setup:browser && bun run setup:py",
+    "setup:browser": "bunx playwright install chromium",
+    "setup:py": "uv sync",
+    "setup:py:gpu": "uv sync --extra gpu",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "playwright": "^1.58.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.7.0"
+  }
+}

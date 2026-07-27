@@ -1,0 +1,50 @@
+# --- Segredos -----------------------------------------------------------
+.env
+.env.local
+.env.*.local
+state/                    # storage_state.json = sessão autenticada
+
+# --- Acervo -------------------------------------------------------------
+# O conteúdo vive no disco de estudo (/mnt/e/Marketing/Focus), nunca no git.
+repository
+
+# Rede de segurança: mídia solta na raiz do projeto também não entra.
+*.mp4
+*.mkv
+*.webm
+*.m4a
+*.mp3
+*.srt
+*.vtt
+
+# --- Estado / banco -----------------------------------------------------
+*.db
+*.db-shm
+*.db-wal
+*.log
+
+# --- Bun / Node ---------------------------------------------------------
+node_modules/
+dist/
+*.tsbuildinfo
+# bun.lock é versionado de propósito (build reproduzível)
+
+# --- Python -------------------------------------------------------------
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+# uv.lock é versionado de propósito
+
+# --- Playwright ---------------------------------------------------------
+playwright-report/
+test-results/
+
+# --- SO / editor --------------------------------------------------------
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
