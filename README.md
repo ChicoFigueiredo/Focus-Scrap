@@ -18,13 +18,20 @@ SSO) — embora as credenciais sejam as mesmas:
 
 | Sistema | Stack | Papel |
 |---|---|---|
-| `faculdadefocus.com.br` | Next.js + JWT | portal: matrículas, dados do aluno, financeiro |
-| `ava.faculdadefocus.edu.br` | **Moodle** | **AVA da pós — onde estão os materiais** |
+| **`faculdadefocus.com.br`** | Next.js + JWT | **portal — é onde o curso a capturar é acessado** |
+| `ava.faculdadefocus.edu.br` | Moodle | "AVA - Pós-Graduação (2025)" — outro sistema, não serve este curso |
 | `faculdadefocus.jacad.com.br` | JACAD | AVA da graduação — fora de escopo |
 
-O curso matriculado nesta conta ("Marketing Digital e Storytelling orientado a
-Tecnologias da Web") é de **pós-graduação**, então o alvo do scrape é o Moodle.
-O portal entra só pelas matrículas.
+O curso ("Marketing Digital e Storytelling orientado a Tecnologias da Web") abre
+em `/aluno/<slug>/meus-cursos/28859/aulas/<disciplina>`, no **próprio portal**.
+Os links de AVA no menu lateral levam a sistemas separados, sem SSO, que não
+hospedam esta turma.
+
+O mapa completo — endpoints, headers, pipeline de vídeo — está em
+[docs/reconhecimento.md](docs/reconhecimento.md).
+
+> **Provas ficam fora do escopo, sempre.** Nada de `GET /exams`, "Fazer prova"
+> ou "Refazer" — nem em código, nem em investigação manual.
 
 ## Arquitetura
 
@@ -48,16 +55,21 @@ Dá para rodar só o scrape (sem GPU) ou só a mídia (máquina ligada à noite)
 
 ## O agente (`gpt-4o-mini`)
 
-Decide **na página**, onde o DOM não é determinístico. O alvo ser Moodle encolheu
-bastante esse papel — a árvore de curso→seção→atividade é previsível e tem API
-própria —, então sobrou o que é de fato ambíguo: classificar um anexo
-(`Ebook`/`Slides`/`Exercícios`) a partir de nome e contexto, decidir se uma seção
-é matéria ou unidade, e normalizar título bagunçado para a convenção de nomes.
+O agente **não é chamado por item** — isso seria caro e não-determinístico. O
+papel dele é *sintetizar o padrão* e gravá-lo, para as execuções seguintes
+rodarem sem LLM nenhum:
 
-Recebe DOM podado, responde JSON de schema fixo, e só escolhe ações de uma
-allowlist. Toda decisão fica em `agent_decisions` para auditoria — e para virar
-seletor determinístico depois. Sem chave de API, cai em heurística local: o
-pipeline nunca para por falta de LLM.
+- derivar o slug do CDN a partir do nome da disciplina
+  (`Fundamentos de Marketing` → `fundamentos-de-marketing`) e validar com um HEAD
+- reextrair o regex do `<li data-src>` quando o template do CDN mudar
+- classificar anexo em `Ebook` / `Slides` / `Exercícios`
+- mapear nome de módulo para a convenção de pastas do acervo
+
+Cada padrão aceito fica em `agent_patterns` junto da assinatura da página que o
+gerou. Enquanto a assinatura não mudar, o scrape é 100% regex. O agente só
+reaparece quando o padrão quebra — é um mecanismo de auto-reparo, não um passo
+do caminho feliz. Sem chave de API, cai em heurística local: o pipeline nunca
+para por falta de LLM.
 
 ## Acervo
 

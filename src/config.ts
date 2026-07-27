@@ -16,15 +16,20 @@ export const STATE_DIR = join(BASE_DIR, "state");
 export const REPOSITORY = join(BASE_DIR, "repository");
 
 // --- Alvos --------------------------------------------------------------
-// São dois sistemas distintos, com sessões independentes e as MESMAS credenciais:
+// Dois sistemas distintos, sessões independentes, MESMAS credenciais:
 //
 //   portal  faculdadefocus.com.br      Next.js + JWT (POST api.grupofocus.com.br/sessions)
-//           → matrículas, dados do aluno, financeiro. Não serve conteúdo.
-//   ava     ava.faculdadefocus.edu.br  Moodle
-//           → onde vivem os vídeos, ebooks e slides da pós-graduação.
+//           → É AQUI que o curso a capturar é acessado, em
+//             /aluno/<slug>/meus-cursos/<enrollment>/aulas/<disciplina>.
+//   ava     ava.faculdadefocus.edu.br  Moodle ("AVA - Pós-Graduação (2025)")
+//           → Secundário. Link no menu do portal, mas NÃO é onde está o curso
+//             desta matrícula. Mantido porque o login funciona e pode ter
+//             material de outras turmas.
 //
 // (Existe ainda faculdadefocus.jacad.com.br — AVA da GRADUAÇÃO, sistema JACAD.
 //  Fora de escopo: o curso matriculado nesta conta é de pós.)
+//
+// O mapa completo das rotas e do pipeline de mídia está em docs/reconhecimento.md.
 export const PORTAL_URL = process.env.FOCUS_BASE_URL ?? "https://faculdadefocus.com.br";
 export const AVA_URL = process.env.FOCUS_AVA_URL ?? "https://ava.faculdadefocus.edu.br";
 
