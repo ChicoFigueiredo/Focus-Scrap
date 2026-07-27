@@ -6,10 +6,25 @@ transcreve e legenda, e organiza tudo no disco de estudo.
 Herda o molde do scraper `kultivi` (`~/dev/LG/EduLingoCursos/tools/scrapers/kultivi`):
 fila resumível em SQLite, downloads com rate-limit, transcrição na GPU e painel web.
 
-> **Estado atual: ambiente montado, pipeline ainda não implementado.**
-> Existem hoje o `config` dos dois lados, o esqueleto de pastas e o setup de
-> build/test. Os módulos de auth, scrape, agente, download e transcrição ainda
-> serão escritos.
+> **Estado atual: ambiente montado e login funcionando.**
+> Prontos: `config` dos dois lados e `auth.ts` (autentica de verdade nos dois
+> sistemas e salva as sessões). Ainda por escrever: `scrape`, `agent`, `naming`,
+> `downloader`, `transcriber`, `panel`.
+
+## Os três sistemas
+
+A Faculdade Focus não tem um AVA só, e o login de um não vale no outro (não há
+SSO) — embora as credenciais sejam as mesmas:
+
+| Sistema | Stack | Papel |
+|---|---|---|
+| `faculdadefocus.com.br` | Next.js + JWT | portal: matrículas, dados do aluno, financeiro |
+| `ava.faculdadefocus.edu.br` | **Moodle** | **AVA da pós — onde estão os materiais** |
+| `faculdadefocus.jacad.com.br` | JACAD | AVA da graduação — fora de escopo |
+
+O curso matriculado nesta conta ("Marketing Digital e Storytelling orientado a
+Tecnologias da Web") é de **pós-graduação**, então o alvo do scrape é o Moodle.
+O portal entra só pelas matrículas.
 
 ## Arquitetura
 
@@ -33,10 +48,11 @@ Dá para rodar só o scrape (sem GPU) ou só a mídia (máquina ligada à noite)
 
 ## O agente (`gpt-4o-mini`)
 
-Decide **na página**, onde o DOM não é determinístico: achar o link da próxima
-aula quando o seletor conhecido falha, classificar um anexo
-(`Ebook`/`Slides`/`Exercícios`), distinguir módulo de unidade de lição,
-normalizar título bagunçado para a convenção de nomes.
+Decide **na página**, onde o DOM não é determinístico. O alvo ser Moodle encolheu
+bastante esse papel — a árvore de curso→seção→atividade é previsível e tem API
+própria —, então sobrou o que é de fato ambíguo: classificar um anexo
+(`Ebook`/`Slides`/`Exercícios`) a partir de nome e contexto, decidir se uma seção
+é matéria ou unidade, e normalizar título bagunçado para a convenção de nomes.
 
 Recebe DOM podado, responde JSON de schema fixo, e só escolhe ações de uma
 allowlist. Toda decisão fica em `agent_decisions` para auditoria — e para virar
@@ -79,7 +95,10 @@ os tem — use `bun run setup:py:gpu` apenas se quiser o venv autossuficiente.
 ## Uso
 
 ```bash
-bun run login     # Playwright → state/storage_state.json
+bun run login              # os dois sistemas → state/{portal,ava}_state.json
+bun run login -- --ava     # só o Moodle
+bun run login -- --headed  # abre o navegador para depurar
+
 bun run scan      # reconcilia o acervo do disco com o banco
 bun run scrape    # cataloga curso → matéria → unidade → lição
 bun run media     # workers Python: baixa + transcreve
@@ -94,8 +113,9 @@ bun run typecheck
 
 | Variável | Padrão | Descrição |
 |---|---|---|
-| `FOCUS_BASE_URL` | `https://faculdadefocus.com.br` | raiz do AVA |
-| `FOCUS_USER` / `FOCUS_PASSWORD` | — | credenciais do aluno |
+| `FOCUS_BASE_URL` | `https://faculdadefocus.com.br` | portal |
+| `FOCUS_AVA_URL` | `https://ava.faculdadefocus.edu.br` | Moodle da pós |
+| `FOCUS_USER` / `FOCUS_PASSWORD` | — | credenciais do aluno (valem nos dois) |
 | `OPENROUTER_API_KEY` | — | chave do agente |
 | `FOCUS_AGENT_MODEL` | `openai/gpt-4o-mini` | modelo do agente |
 | `FOCUS_RATE_LIMIT` | `3M` | limite de banda do yt-dlp |

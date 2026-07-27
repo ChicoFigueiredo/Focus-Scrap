@@ -7,8 +7,15 @@ describe("config", () => {
     expect(existsSync(`${config.BASE_DIR}/package.json`)).toBe(true);
   });
 
-  test("lê FOCUS_BASE_URL do .env", () => {
-    expect(config.BASE_URL).toStartWith("https://");
+  test("lê as URLs dos dois sistemas", () => {
+    expect(config.PORTAL_URL).toStartWith("https://");
+    expect(config.AVA_URL).toStartWith("https://");
+    // São sistemas distintos, sem SSO entre eles — confundir os dois quebra o login.
+    expect(config.PORTAL_URL).not.toBe(config.AVA_URL);
+  });
+
+  test("cada alvo tem seu próprio arquivo de sessão", () => {
+    expect(config.STORAGE_STATE.portal).not.toBe(config.STORAGE_STATE.ava);
   });
 
   test("o symlink repository aponta para o disco de estudo", () => {

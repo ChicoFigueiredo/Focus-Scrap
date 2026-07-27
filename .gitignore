@@ -2,7 +2,10 @@
 .env
 .env.local
 .env.*.local
-state/                    # storage_state.json = sessão autenticada
+# Sessões autenticadas (cookies + JWT) — NUNCA versionar.
+# Atenção: .gitignore não aceita comentário no fim da linha; '#' só comenta
+# quando abre a linha. 'state/  # nota' não ignora nada.
+state/
 
 # --- Acervo -------------------------------------------------------------
 # O conteúdo vive no disco de estudo (/mnt/e/Marketing/Focus), nunca no git.
