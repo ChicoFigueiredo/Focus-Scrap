@@ -32,6 +32,7 @@ const TAREFAS: Record<string, { rotulo: string; cmd: string[] }> = {
   scan: { rotulo: "Reconciliar disco", cmd: ["bun", "run", "src/cli.ts", "scan"] },
   media: { rotulo: "Baixar e transcrever", cmd: ["uv", "run", "python", "-m", "focus.worker"] },
   "media-sem-gpu": { rotulo: "Só baixar", cmd: ["uv", "run", "python", "-m", "focus.worker", "--no-transcribe"] },
+  verify: { rotulo: "Conferir integridade", cmd: ["uv", "run", "python", "-m", "focus.verify"] },
 };
 
 interface Execucao {
@@ -49,7 +50,9 @@ function disparar(db: Database, nome: string): { ok: boolean; msg: string } {
   // arquivo parcial, e dois `scrape` abririam Chromium em dobro.
   if (rodando.has(nome)) return { ok: false, msg: `${t.rotulo} já está rodando` };
 
-  const proc = Bun.spawn(t.cmd, { cwd: BASE_DIR, stdout: "pipe", stderr: "pipe" });
+  // stderr descartado: um pipe que ninguém lê enche e trava o filho para sempre
+  // — o `uv` e o `yt-dlp` escrevem progresso lá. O stdout é lido logo abaixo.
+  const proc = Bun.spawn(t.cmd, { cwd: BASE_DIR, stdout: "pipe", stderr: "ignore" });
   const exec: Execucao = { desde: Date.now(), proc, ultimaLinha: "iniciando…" };
   rodando.set(nome, exec);
   log(db, "info", "painel", `${t.rotulo}: iniciado`);
