@@ -25,6 +25,9 @@ import { CURSO_PASTA } from "./config.ts";
 import { log, upsertDiscipline, upsertItem, upsertModule, type Kind } from "./db.ts";
 import { explorarDisciplina, lerDisciplinas, type LessonCapture } from "./lesson.ts";
 
+/** Teto de navegação por disciplina, em minutos. */
+const TETO_MIN = Number(process.env.FOCUS_TETO_MIN ?? 12);
+
 export interface ResumoScrape {
   disciplinas: number;
   modulos: number;
@@ -77,10 +80,17 @@ export async function scrape(
     // uma delas morrer (OOM, timeout, DOM inesperado) não pode levar junto as
     // outras oito. Aconteceu — o processo caiu na 4ª e perdeu o resto da fila.
     try {
-      await catalogarDisciplina(db, enrollmentId, d, {
-        diga, avisos,
-        contar: (m, i) => { nModulos += m; nItens += i; },
-      });
+      // Teto de tempo por disciplina. Sem ele o catálogo trava indefinidamente:
+      // uma disciplina passou 40 minutos no accordion sem produzir um item, e
+      // as seguintes nunca chegaram a ser tentadas. Melhor pular e registrar.
+      await Promise.race([
+        catalogarDisciplina(db, enrollmentId, d, {
+          diga, avisos,
+          contar: (m, i) => { nModulos += m; nItens += i; },
+        }),
+        new Promise<never>((_, rej) =>
+          setTimeout(() => rej(new Error(`estourou ${TETO_MIN} min de navegação`)), TETO_MIN * 60_000)),
+      ]);
     } catch (e) {
       avisos.push(`${d.nome}: falhou e foi pulada — ${(e as Error).message.slice(0, 160)}`);
       diga(`   ✗ ${d.nome}: ${(e as Error).message.slice(0, 100)}`);
