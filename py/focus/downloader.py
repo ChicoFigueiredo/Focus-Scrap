@@ -52,21 +52,35 @@ def duracao_segundos(arquivo: Path) -> float | None:
 RE_FONTE = re.compile(r'<source\b[^>]*\bsrc="([^"]+)"', re.I)
 
 
-def resolver_iesde(show_url: str) -> str:
+def resolver_iesde(show_url: str, tentativas: int = 3) -> str:
     """Traduz a página `/iesde/lessons/<id>/show` no MP4 de fato.
 
     O link do vídeo é **assinado e expira** (`qsig=<jwt>` com `exp`), então o
     catálogo guarda a página e não o arquivo — resolver aqui, na hora de baixar,
     é o que evita uma fila que apodrece antes de ser consumida.
 
-    A página responde 200 sem cookie e já traz o `<source>` renderizado.
+    A página responde 200 sem cookie e já traz o `<source>` renderizado. Mas
+    devolve 200 SEM o `<source>` quando estamos pedindo rápido demais: três
+    aulas seguidas falharam assim, e ao conferir na mão a página tinha o vídeo.
+    Por isso repete com espera crescente em vez de desistir na primeira.
     """
-    r = requests.get(show_url, timeout=60, headers={"User-Agent": "Mozilla/5.0"})
-    r.raise_for_status()
-    m = RE_FONTE.search(r.text)
-    if not m:
-        raise FalhaDownload(f"nenhum <source> em {show_url}")
-    return m.group(1)
+    ultimo = ""
+    for n in range(tentativas):
+        if n:
+            time.sleep(3 * n)
+        try:
+            r = requests.get(show_url, timeout=60, headers={
+                "User-Agent": "Mozilla/5.0",
+                "Referer": "https://faculdadefocus.com.br/",
+            })
+            r.raise_for_status()
+            m = RE_FONTE.search(r.text)
+            if m:
+                return m.group(1)
+            ultimo = f"200 sem <source> ({len(r.text)} bytes)"
+        except Exception as e:
+            ultimo = str(e)[:120]
+    raise FalhaDownload(f"não resolvi {show_url} em {tentativas} tentativas — {ultimo}")
 
 
 def baixar_video(manifesto: str, destino: Path) -> tuple[int, float]:
@@ -125,7 +139,14 @@ def baixar_arquivo(url: str, destino: Path) -> int:
     destino.parent.mkdir(parents=True, exist_ok=True)
     parcial = destino.with_suffix(destino.suffix + ".parcial")
     with requests.get(url, stream=True, timeout=300,
-                      headers={"User-Agent": "Mozilla/5.0"}) as r:
+                      headers={"User-Agent": "Mozilla/5.0",
+                               "Referer": "https://faculdadefocus.com.br/"}) as r:
+        # PDF do IESDE vem por URL assinada com validade curta. Se o catálogo é
+        # de horas atrás, a assinatura já morreu — e o erro precisa dizer o que
+        # fazer, não só "403".
+        if r.status_code == 403 and "qsig=" in url:
+            raise FalhaDownload(
+                "URL assinada expirou (qsig) — rode 'Catalogar' de novo para renovar e baixe em seguida")
         r.raise_for_status()
         with parcial.open("wb") as f:
             for pedaco in r.iter_content(chunk_size=1 << 16):
