@@ -105,21 +105,54 @@ def resolver_iesde(show_url: str, tentativas: int = 4) -> str:
     raise FalhaDownload(f"não resolvi {show_url} em {tentativas} rodadas — {ultimo}")
 
 
-def baixar_video(manifesto: str, destino: Path) -> tuple[int, float]:
-    """Baixa o vídeo e a legenda oficial. Devolve (bytes, duração)."""
-    if "/iesde/lessons/" in manifesto:
-        manifesto = resolver_iesde(manifesto)
+# --- Estratégias de download -------------------------------------------------
+#
+# Uma ferramenta só é um ponto único de falha. Cada estratégia abaixo baixa
+# `url` em `parcial` ou levanta exceção; `baixar_video` tenta na ordem e
+# registra qual funcionou, para a próxima vez começar pela que costuma resolver.
 
-    destino.parent.mkdir(parents=True, exist_ok=True)
-    parcial = destino.with_suffix(destino.suffix + ".parcial")
-    parcial.unlink(missing_ok=True)
 
+def _http_direto(url: str, parcial: Path) -> None:
+    """Streaming HTTP puro — o caminho certo para MP4 direto (IESDE).
+
+    Retoma de onde parou via `Range`, então uma queda no meio de um arquivo de
+    200 MB não recomeça do zero. Não serve para HLS, que é lista de segmentos.
+    """
+    ja = parcial.stat().st_size if parcial.exists() else 0
+    cab = dict(_CABECALHOS)
+    if ja:
+        cab["Range"] = f"bytes={ja}-"
+
+    with requests.get(url, stream=True, timeout=300, headers=cab) as r:
+        if ja and r.status_code == 200:
+            ja = 0                      # servidor ignorou o Range: recomeça
+            parcial.unlink(missing_ok=True)
+        elif ja and r.status_code != 206:
+            r.raise_for_status()
+        else:
+            r.raise_for_status()
+
+        limite = _bytes_por_segundo()
+        with parcial.open("ab" if ja else "wb") as f:
+            inicio = time.monotonic()
+            escritos = 0
+            for pedaco in r.iter_content(chunk_size=1 << 16):
+                f.write(pedaco)
+                escritos += len(pedaco)
+                # "baixar aos poucos": respeita o mesmo limite do yt-dlp.
+                if limite:
+                    esperado = escritos / limite
+                    atraso = esperado - (time.monotonic() - inicio)
+                    if atraso > 0:
+                        time.sleep(atraso)
+
+
+def _com_ytdlp(url: str, parcial: Path) -> None:
+    """yt-dlp — obrigatório em HLS, e é quem traz a legenda oficial embutida."""
     cmd = [
         _exigir("yt-dlp"),
-        "--no-playlist",
-        "--newline",
-        "--retries", "5",
-        "--fragment-retries", "10",
+        "--no-playlist", "--newline",
+        "--retries", "5", "--fragment-retries", "10",
         "--limit-rate", config.DOWNLOAD_RATE_LIMIT,
         "-f", config.YTDLP_FORMAT,
         "--merge-output-format", "mp4",
@@ -128,24 +161,91 @@ def baixar_video(manifesto: str, destino: Path) -> tuple[int, float]:
         "--write-subs", "--sub-langs", "por,pt,pt-BR,pt.*",
         "--convert-subs", "srt",
         "-o", str(parcial),
-        manifesto,
+        url,
     ]
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
     if r.returncode != 0:
-        parcial.unlink(missing_ok=True)
-        raise FalhaDownload((r.stderr or r.stdout or "yt-dlp falhou")[-400:])
+        raise FalhaDownload((r.stderr or r.stdout or "yt-dlp falhou")[-300:])
 
-    # yt-dlp pode acrescentar extensão ao nome; encontra o que ele de fato criou.
-    gerado = parcial if parcial.exists() else next(
-        iter(sorted(parcial.parent.glob(parcial.name + "*"), key=lambda p: -p.stat().st_size)), None)
-    if not gerado or gerado.stat().st_size == 0:
-        raise FalhaDownload("yt-dlp terminou sem produzir arquivo")
+
+def _com_ffmpeg(url: str, parcial: Path) -> None:
+    """ffmpeg — segunda opinião para HLS e para MP4 que o yt-dlp recuse.
+
+    Remuxa sem recodificar (`-c copy`), então é rápido e não perde qualidade.
+    Não traz legenda; quando é ele que salva o download, a transcrição fica
+    para o Whisper.
+    """
+    saida = parcial.with_suffix(".mp4") if parcial.suffix != ".mp4" else parcial
+    cmd = [
+        _exigir("ffmpeg"), "-y", "-loglevel", "error",
+        "-headers", f"Referer: {_CABECALHOS['Referer']}\r\nUser-Agent: {_CABECALHOS['User-Agent']}\r\n",
+        "-i", url, "-c", "copy", "-bsf:a", "aac_adtstoasc", str(saida),
+    ]
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
+    if r.returncode != 0:
+        raise FalhaDownload((r.stderr or "ffmpeg falhou")[-300:])
+    if saida != parcial:
+        saida.replace(parcial)
+
+
+def _bytes_por_segundo() -> float:
+    """Traduz "3M" do config em bytes/s. 0 desliga o limite."""
+    v = (config.DOWNLOAD_RATE_LIMIT or "").strip().upper()
+    if not v:
+        return 0
+    mult = {"K": 1 << 10, "M": 1 << 20, "G": 1 << 30}.get(v[-1:], 1)
+    try:
+        return float(v.rstrip("KMG")) * mult
+    except ValueError:
+        return 0
+
+
+def _estrategias(url: str) -> list:
+    """HLS é lista de segmentos: só ferramenta que entende o formato serve.
+    MP4 direto começa pelo HTTP puro, que é mais simples e retomável."""
+    if ".m3u8" in url:
+        return [_com_ytdlp, _com_ffmpeg]
+    return [_http_direto, _com_ytdlp, _com_ffmpeg]
+
+
+def baixar_video(manifesto: str, destino: Path,
+                 registrar=None) -> tuple[int, float]:
+    """Baixa o vídeo e a legenda oficial. Devolve (bytes, duração)."""
+    if "/iesde/lessons/" in manifesto:
+        manifesto = resolver_iesde(manifesto)
+
+    destino.parent.mkdir(parents=True, exist_ok=True)
+    parcial = destino.with_suffix(destino.suffix + ".parcial")
+
+    falhas: list[str] = []
+    gerado = None
+    for estrategia in _estrategias(manifesto):
+        nome = estrategia.__name__.strip("_")
+        try:
+            estrategia(manifesto, parcial)
+            # yt-dlp pode acrescentar extensão ao nome; acha o que criou.
+            gerado = parcial if parcial.exists() else next(
+                iter(sorted(parcial.parent.glob(parcial.name + "*"),
+                            key=lambda p: -p.stat().st_size)), None)
+            if not gerado or gerado.stat().st_size == 0:
+                raise FalhaDownload("terminou sem produzir arquivo")
+            if duracao_segundos(gerado) is None:
+                raise FalhaDownload("ffprobe rejeitou o arquivo (truncado ou corrompido)")
+            if registrar:
+                registrar(f"{destino.name}: baixado por {nome}" +
+                          (f" (após {', '.join(falhas)})" if falhas else ""))
+            break
+        except Exception as e:
+            falhas.append(f"{nome}: {str(e)[:90]}")
+            # Restos de tentativa fracassada envenenariam a próxima.
+            for lixo in parcial.parent.glob(parcial.name + "*"):
+                lixo.unlink(missing_ok=True)
+            gerado = None
+
+    if not gerado:
+        raise FalhaDownload("todas as estratégias falharam — " + " | ".join(falhas))
 
     dur = duracao_segundos(gerado)
-    if dur is None:
-        gerado.unlink(missing_ok=True)
-        raise FalhaDownload("ffprobe rejeitou o arquivo (truncado ou corrompido)")
-
     gerado.replace(destino)
 
     # Move a legenda para o nome do acervo: <mesmo prefixo>.srt
@@ -153,7 +253,7 @@ def baixar_video(manifesto: str, destino: Path) -> tuple[int, float]:
         srt.replace(destino.with_suffix(".srt"))
         break
 
-    return destino.stat().st_size, dur
+    return destino.stat().st_size, float(dur or 0)
 
 
 def baixar_arquivo(url: str, destino: Path) -> int:
@@ -194,7 +294,9 @@ def processar(conn: sqlite3.Connection, item: sqlite3.Row) -> None:
 
     try:
         if item["kind"] == "video":
-            tamanho, dur = baixar_video(item["source_url"], destino)
+            tamanho, dur = baixar_video(
+                item["source_url"], destino,
+                registrar=lambda m: db.log(conn, "info", "downloader", m))
             db.marcar(conn, item["id"], "download", "done", None, bytes=tamanho, duration=dur)
             # Legenda oficial baixada junto dispensa o Whisper.
             if destino.with_suffix(".srt").exists():

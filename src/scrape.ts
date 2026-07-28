@@ -25,8 +25,15 @@ import { CURSO_PASTA } from "./config.ts";
 import { log, upsertDiscipline, upsertItem, upsertModule, type Kind } from "./db.ts";
 import { explorarDisciplina, lerDisciplinas, type LessonCapture } from "./lesson.ts";
 
-/** Teto de navegação por disciplina, em minutos. */
-const TETO_MIN = Number(process.env.FOCUS_TETO_MIN ?? 12);
+/**
+ * Teto de navegação por disciplina, em minutos.
+ *
+ * 30 e não 12: com 12 uma disciplina foi pulada por contenção — havia GPU
+ * transcrevendo e outro navegador aberto ao mesmo tempo —, e rodada sozinha
+ * depois ela levou 3 minutos. O teto existe para destravar catálogo pendurado,
+ * não para punir máquina ocupada.
+ */
+const TETO_MIN = Number(process.env.FOCUS_TETO_MIN ?? 30);
 
 export interface ResumoScrape {
   disciplinas: number;
