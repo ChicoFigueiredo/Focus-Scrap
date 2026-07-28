@@ -12,10 +12,12 @@
  * deixa arrastar a linha do tempo, só tocar do começo.
  */
 import type { Database } from "bun:sqlite";
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 import { BASE_DIR, PANEL_HOST, REPOSITORY } from "./config.ts";
+import { lerTrechos, srtParaVtt } from "./legenda.ts";
+import { PAGINA } from "./panel-ui.ts";
 import { log, reenfileirar, stats } from "./db.ts";
 
 /**
@@ -226,159 +228,40 @@ function arvore(db: Database): LinhaArvore[] {
   `).all();
 }
 
-// Template literal NORMAL, não String.raw: o script embutido usa crases e `${}`
-// escapados, e String.raw preservaria as barras invertidas, entregando ao
-// navegador um JS com erro de sintaxe — a página abria só com o cabeçalho.
-const PAGINA = `
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>focus-scrap</title>
-<style>
- :root{--bg:#0f1115;--card:#171a21;--linha:#242833;--txt:#e6e8ee;--fraco:#8b93a7;--ok:#3fb950;--erro:#f85149;--pend:#d29922;--ac:#4c8dff}
- @media (prefers-color-scheme:light){:root{--bg:#f6f7f9;--card:#fff;--linha:#e3e6ec;--txt:#1a1d23;--fraco:#666e80}}
- *{box-sizing:border-box}
- body{margin:0;background:var(--bg);color:var(--txt);font:14px/1.5 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
- header{padding:16px 20px;border-bottom:1px solid var(--linha);display:flex;gap:16px;align-items:center;flex-wrap:wrap}
- h1{font-size:16px;margin:0;font-weight:650}
- nav a{color:var(--fraco);text-decoration:none;margin-right:14px;cursor:pointer}
- nav a.on{color:var(--ac);font-weight:600}
- main{padding:20px;max-width:1200px;margin:0 auto}
- .grade{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:20px}
- .cartao{background:var(--card);border:1px solid var(--linha);border-radius:10px;padding:14px}
- .num{font-size:24px;font-weight:650}
- .rot{color:var(--fraco);font-size:12px;text-transform:uppercase;letter-spacing:.4px}
- .barra{height:7px;background:var(--linha);border-radius:99px;overflow:hidden;margin-top:8px}
- .barra i{display:block;height:100%;background:var(--ok)}
- details{background:var(--card);border:1px solid var(--linha);border-radius:10px;margin-bottom:8px}
- summary{padding:12px 14px;cursor:pointer;font-weight:600;display:flex;justify-content:space-between;gap:10px}
- .mod{padding:0 14px 12px}
- .mod>b{display:block;margin:12px 0 6px;color:var(--fraco);font-size:12px;text-transform:uppercase}
- table{width:100%;border-collapse:collapse}
- td{padding:6px 8px;border-top:1px solid var(--linha);vertical-align:top}
- td.n{color:var(--fraco);white-space:nowrap;width:1%}
- .tag{font-size:11px;padding:1px 7px;border-radius:99px;border:1px solid var(--linha)}
- .done{color:var(--ok)}.error{color:var(--erro)}.pending{color:var(--pend)}.skipped{color:var(--fraco)}
- button{background:var(--ac);color:#fff;border:0;border-radius:7px;padding:7px 13px;cursor:pointer;font:inherit}
- button.sec{background:transparent;color:var(--txt);border:1px solid var(--linha)}
- button:disabled{opacity:.45;cursor:not-allowed}
- pre.saida{margin:0;padding:10px 12px;background:var(--bg);border:1px solid var(--linha);border-radius:8px;
-   font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;word-break:break-word;
-   max-height:230px;overflow:auto;color:var(--fraco)}
- .abrir{color:var(--ac);cursor:pointer;text-decoration:none}
- #visor{position:fixed;inset:0;background:#000c;display:none;align-items:center;justify-content:center;padding:24px;z-index:9}
- #visor>div{background:var(--card);border-radius:12px;padding:14px;max-width:min(1000px,95vw);width:100%}
- video,iframe{width:100%;border:0;border-radius:8px;background:#000}
- iframe{height:78vh}
- ul.ev{list-style:none;padding:0;margin:0;max-height:280px;overflow:auto}
- ul.ev li{padding:5px 0;border-top:1px solid var(--linha);font-size:13px}
- .fraco{color:var(--fraco)}
-</style>
-<header>
-  <h1>focus-scrap</h1>
-  <nav><a id="t-painel" class="on">Painel</a><a id="t-curso">Explorador</a></nav>
-  <span style="flex:1"></span>
-  <span class="fraco" id="resumo" style="font-size:13px"></span>
-  <button class="sec" onclick="carregar()">Atualizar</button>
-</header>
-<main><div id="acoes" class="cartao" style="margin-bottom:20px"></div><div id="painel"></div><div id="curso" hidden></div></main>
-<div id="visor" onclick="if(event.target.id==='visor')fechar()"><div id="visor-c"></div></div>
-<script>
-const $ = s => document.querySelector(s);
-const esc = s => (s??'').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const mb = b => !b ? '' : b > 1e9 ? (b/1e9).toFixed(2)+' GB' : (b/1e6).toFixed(1)+' MB';
+/** Estatísticas por disciplina — alimentam a combo e o painel de métricas. */
+function disciplinas(db: Database) {
+  return db.query(`
+    SELECT d.id, d.position AS posicao, d.name AS nome,
+           COUNT(DISTINCT m.id)                              AS modulos,
+           COUNT(i.id)                                       AS itens,
+           COALESCE(SUM(i.download_status='done'), 0)        AS ok,
+           COALESCE(SUM(i.kind='video'), 0)                  AS videos,
+           COALESCE(SUM(i.kind='video' AND i.transcribe_status='done'), 0) AS transcritos,
+           COALESCE(SUM(i.bytes), 0)                         AS bytes,
+           COALESCE(SUM(i.duration), 0)                      AS duracao
+      FROM disciplines d
+      LEFT JOIN modules m ON m.discipline_id = d.id
+      LEFT JOIN items   i ON i.module_id = m.id
+     GROUP BY d.id ORDER BY d.position
+  `).all();
+}
 
-let dados = null;
-async function carregar(){
-  dados = await (await fetch('/api/tudo')).json();
-  pintarAcoes(); pintarPainel(); pintarCurso();
-}
-function pintarAcoes(){
-  const ativa = dados.tarefas.some(t=>t.rodando);
-  const emCurso = dados.tarefas.filter(t=>t.rodando);
-  $('#acoes').innerHTML = \`
-    <div class="rot" style="margin-bottom:10px">Ações</div>
-    <div style="display:flex;gap:8px;flex-wrap:wrap">
-      \${dados.tarefas.map(t=>\`<button \${t.rodando||ativa?'disabled':''} onclick="rodar('\${t.nome}')"
-        title="\${esc(t.dica)}"
-        class="\${t.nome.startsWith('media')?'':'sec'}">\${t.rodando?'▶ ':''}\${esc(t.rotulo)}\${t.rodando?\` (\${t.segundos}s)\`:''}</button>\`).join('')}
-    </div>
-    \${emCurso.map(t=>\`
-      <div style="margin-top:12px">
-        <div class="rot" style="margin-bottom:6px">\${esc(t.rotulo)} — \${t.segundos}s</div>
-        <pre class="saida">\${t.linhas.map(esc).join('\\n') || 'aguardando saída…'}</pre>
-      </div>\`).join('')}
-    \${ativa?'':'<div class="fraco" style="margin-top:10px;font-size:12px">Passe o mouse num botão para ver o que ele faz. Ordem usual: <b>Catalogar o que falta</b> → <b>Reconciliar disco</b> → <b>Baixar e transcrever</b>. Se houver erro de assinatura expirada: <b>Renovar as com erro</b> → <b>Reenfileirar erros</b> → <b>Baixar e transcrever</b>.</div>'}\`;
-}
-async function rodar(nome){
-  const r = await (await fetch('/api/run?tarefa='+nome,{method:'POST'})).json();
-  if(!r.ok) alert(r.msg);
-  carregar();
-}
-function pintarPainel(){
-  const s = dados.stats, ev = dados.eventos;
-  const err = s.porStatus.error||0, pend = s.porStatus.pending||0;
-  $('#resumo').textContent = err||pend
-    ? \`\${pend} na fila\${err?\` · \${err} com erro\`:''}\`
-    : 'tudo capturado';
-  const done = s.porStatus.done||0, tot = s.itens||0;
-  const pct = tot ? Math.round(done/tot*100) : 0;
-  $('#painel').innerHTML = \`
-   <div class="grade">
-     <div class="cartao"><div class="rot">Disciplinas</div><div class="num">\${s.disciplinas}</div></div>
-     <div class="cartao"><div class="rot">Módulos</div><div class="num">\${s.modulos}</div></div>
-     <div class="cartao"><div class="rot">Itens</div><div class="num">\${s.itens}</div></div>
-     <div class="cartao"><div class="rot">No disco</div><div class="num">\${mb(s.bytes)||'—'}</div></div>
-     <div class="cartao"><div class="rot">Capturado</div><div class="num">\${pct}%</div>
-       <div class="barra"><i style="width:\${pct}%"></i></div></div>
-   </div>
-   <div class="grade">
-     \${Object.entries(s.porStatus).map(([k,v])=>\`<div class="cartao"><div class="rot">\${k}</div><div class="num \${k}">\${v}</div></div>\`).join('')}
-     \${Object.entries(s.porTipo).map(([k,v])=>\`<div class="cartao"><div class="rot">tipo \${k}</div><div class="num">\${v}</div></div>\`).join('')}
-   </div>
-   <div class="cartao"><div class="rot" style="margin-bottom:8px">Eventos</div>
-     <ul class="ev">\${ev.map(e=>\`<li><span class="fraco">\${e.at}</span> <b class="\${e.level==='error'?'error':''}">\${esc(e.source)}</b> \${esc(e.message)}</li>\`).join('') || '<li class="fraco">nada ainda</li>'}</ul>
-   </div>\`;
-}
-function pintarCurso(){
-  const porDisc = new Map();
-  for (const r of dados.arvore){
-    if(!porDisc.has(r.disc_id)) porDisc.set(r.disc_id,{nome:r.disc_nome,pos:r.disc_pos,mods:new Map()});
-    if(r.mod_id==null) continue;
-    const d = porDisc.get(r.disc_id);
-    if(!d.mods.has(r.mod_id)) d.mods.set(r.mod_id,{nome:r.mod_nome,pos:r.mod_pos,itens:[]});
-    if(r.item_id!=null) d.mods.get(r.mod_id).itens.push(r);
+/**
+ * Acha a legenda de um vídeo no disco.
+ *
+ * O acervo guarda a legenda ao lado do vídeo, com o mesmo nome: `X.mp4` →
+ * `X.srt`. Alguns itens antigos têm `.vtt`, e a transcrição por Whisper também
+ * escreve `-Fala.Cronometrada.txt` — este último não serve de faixa (não tem
+ * tempo de fim), mas serve de texto.
+ */
+function caminhoLegenda(relPath: string): string | null {
+  const semExt = relPath.replace(/\.[^./]+$/, "");
+  for (const ext of [".srt", ".vtt"]) {
+    const p = join(REPOSITORY, semExt + ext);
+    if (existsSync(p)) return p;
   }
-  $('#curso').innerHTML = [...porDisc.values()].sort((a,b)=>a.pos-b.pos).map(d=>{
-    const itens = [...d.mods.values()].flatMap(m=>m.itens);
-    const ok = itens.filter(i=>i.download_status==='done').length;
-    return \`<details><summary><span>\${String(d.pos).padStart(2,'0')}. \${esc(d.nome)}</span>
-      <span class="tag">\${ok}/\${itens.length}</span></summary>
-      \${[...d.mods.values()].sort((a,b)=>a.pos-b.pos).map(m=>\`<div class="mod">
-        <b>\${String(m.pos).padStart(2,'0')} — \${esc(m.nome)}</b>
-        <table>\${m.itens.map(i=>\`<tr>
-          <td class="n">\${String(m.pos).padStart(2,'0')}.\${String(i.position).padStart(2,'0')}</td>
-          <td>\${i.download_status==='done'&&i.rel_path?\`<a class="abrir" onclick="abrir(\${i.item_id})">\${esc(i.title)}</a>\`:esc(i.title)}
-              \${i.download_error?\`<div class="error">\${esc(i.download_error)}</div>\`:''}</td>
-          <td class="n"><span class="tag">\${i.kind}</span></td>
-          <td class="n fraco">\${mb(i.bytes)}</td>
-          <td class="n \${i.download_status}">\${i.download_status}</td>
-        </tr>\`).join('')}</table></div>\`).join('')}
-    </details>\`;
-  }).join('') || '<p class="fraco">Nada catalogado ainda. Rode <code>bun run scrape</code>.</p>';
+  return null;
 }
-function abrir(id){
-  const r = dados.arvore.find(x=>x.item_id===id); if(!r) return;
-  const url = '/media/'+id;
-  $('#visor-c').innerHTML = r.kind==='video'
-    ? \`<video src="\${url}" controls autoplay></video>\`
-    : \`<iframe src="\${url}"></iframe>\`;
-  $('#visor').style.display='flex';
-}
-function fechar(){ $('#visor').style.display='none'; $('#visor-c').innerHTML=''; }
-addEventListener('keydown', e => e.key==='Escape' && fechar());
-$('#t-painel').onclick=()=>{ $('#painel').hidden=false; $('#curso').hidden=true; $('#t-painel').classList.add('on'); $('#t-curso').classList.remove('on'); };
-$('#t-curso').onclick=()=>{ $('#painel').hidden=true; $('#curso').hidden=false; $('#t-curso').classList.add('on'); $('#t-painel').classList.remove('on'); };
-carregar(); setInterval(carregar, 10000);
-</script>`;
 
 export function servir(db: Database, porta: number): void {
   const servidor = Bun.serve({
@@ -392,6 +275,7 @@ export function servir(db: Database, porta: number): void {
 
       if (rota === "/api/tudo") {
         return Response.json({
+          disciplinas: disciplinas(db),
           stats: stats(db),
           arvore: arvore(db),
           tarefas: estadoTarefas(),
@@ -406,6 +290,29 @@ export function servir(db: Database, porta: number): void {
       if (rota === "/api/requeue" && req.method === "POST") {
         const qual = url.searchParams.get("qual") === "transcribe" ? "transcribe" : "download";
         return Response.json({ n: reenfileirar(db, qual) });
+      }
+
+      // Legenda como WebVTT: o <track> do navegador NÃO lê SRT, e sem a
+      // conversão a faixa carrega sem erro e simplesmente não aparece.
+      if (rota.startsWith("/legenda/")) {
+        const id = Number(rota.slice("/legenda/".length));
+        const r = db.query<{ rel_path: string | null }, [number]>(
+          `SELECT rel_path FROM items WHERE id=?`).get(id);
+        const leg = r?.rel_path ? caminhoLegenda(r.rel_path) : null;
+        if (!leg) return new Response("sem legenda", { status: 404 });
+        return new Response(srtParaVtt(readFileSync(leg, "utf-8")), {
+          headers: { "Content-Type": "text/vtt; charset=utf-8" },
+        });
+      }
+
+      // Transcrição em trechos com tempo — é o que deixa clicar numa fala e o
+      // vídeo pular para aquele ponto.
+      if (rota.startsWith("/transcricao/")) {
+        const id = Number(rota.slice("/transcricao/".length));
+        const r = db.query<{ rel_path: string | null }, [number]>(
+          `SELECT rel_path FROM items WHERE id=?`).get(id);
+        const leg = r?.rel_path ? caminhoLegenda(r.rel_path) : null;
+        return Response.json(leg ? lerTrechos(readFileSync(leg, "utf-8")) : []);
       }
 
       if (rota.startsWith("/media/")) {
