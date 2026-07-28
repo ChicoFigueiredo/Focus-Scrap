@@ -52,35 +52,57 @@ def duracao_segundos(arquivo: Path) -> float | None:
 RE_FONTE = re.compile(r'<source\b[^>]*\bsrc="([^"]+)"', re.I)
 
 
-def resolver_iesde(show_url: str, tentativas: int = 3) -> str:
+_CABECALHOS = {
+    "User-Agent": "Mozilla/5.0",
+    "Referer": "https://www5.faculdadefocus.com.br/",
+}
+
+
+def _via_api(show_url: str) -> str | None:
+    """`/lessons/<id>/api/url` — o endpoint que o próprio player consulta."""
+    r = requests.get(show_url.replace("/show", "/api/url"), timeout=45, headers=_CABECALHOS)
+    r.raise_for_status()
+    return (r.json() or {}).get("url") or None
+
+
+def _via_source(show_url: str) -> str | None:
+    """Tag `<source>` renderizada no servidor."""
+    r = requests.get(show_url, timeout=60, headers=_CABECALHOS)
+    r.raise_for_status()
+    m = RE_FONTE.search(r.text)
+    return m.group(1) if m else None
+
+
+def resolver_iesde(show_url: str, tentativas: int = 4) -> str:
     """Traduz a página `/iesde/lessons/<id>/show` no MP4 de fato.
 
     O link do vídeo é **assinado e expira** (`qsig=<jwt>` com `exp`), então o
     catálogo guarda a página e não o arquivo — resolver aqui, na hora de baixar,
     é o que evita uma fila que apodrece antes de ser consumida.
 
-    A página responde 200 sem cookie e já traz o `<source>` renderizado. Mas
-    devolve 200 SEM o `<source>` quando estamos pedindo rápido demais: três
-    aulas seguidas falharam assim, e ao conferir na mão a página tinha o vídeo.
-    Por isso repete com espera crescente em vez de desistir na primeira.
+    Duas vias, porque nenhuma cobre tudo:
+
+      - `/api/url` é o que o player usa e é o caminho limpo, mas devolve
+        `{"url":null}` em parte das aulas;
+      - o `<source>` da página cobre essas, mas às vezes vem 200 **sem** a tag
+        quando pedimos rápido demais — conferindo na mão, o vídeo estava lá.
+
+    Daí tentar as duas alternadamente, com espera crescente. Desistir na
+    primeira falha descartava aula boa como se não tivesse vídeo.
     """
-    ultimo = ""
+    ultimo = "sem tentativa"
     for n in range(tentativas):
         if n:
-            time.sleep(3 * n)
-        try:
-            r = requests.get(show_url, timeout=60, headers={
-                "User-Agent": "Mozilla/5.0",
-                "Referer": "https://faculdadefocus.com.br/",
-            })
-            r.raise_for_status()
-            m = RE_FONTE.search(r.text)
-            if m:
-                return m.group(1)
-            ultimo = f"200 sem <source> ({len(r.text)} bytes)"
-        except Exception as e:
-            ultimo = str(e)[:120]
-    raise FalhaDownload(f"não resolvi {show_url} em {tentativas} tentativas — {ultimo}")
+            time.sleep(4 * n)
+        for via in (_via_api, _via_source):
+            try:
+                u = via(show_url)
+                if u:
+                    return u
+                ultimo = f"{via.__name__} devolveu vazio"
+            except Exception as e:
+                ultimo = f"{via.__name__}: {str(e)[:90]}"
+    raise FalhaDownload(f"não resolvi {show_url} em {tentativas} rodadas — {ultimo}")
 
 
 def baixar_video(manifesto: str, destino: Path) -> tuple[int, float]:
