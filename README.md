@@ -6,10 +6,9 @@ transcreve e legenda, e organiza tudo no disco de estudo.
 Herda o molde do scraper `kultivi` (`~/dev/LG/EduLingoCursos/tools/scrapers/kultivi`):
 fila resumível em SQLite, downloads com rate-limit, transcrição na GPU e painel web.
 
-> **Estado atual: ambiente montado e login funcionando.**
-> Prontos: `config` dos dois lados e `auth.ts` (autentica de verdade nos dois
-> sistemas e salva as sessões). Ainda por escrever: `scrape`, `agent`, `naming`,
-> `downloader`, `transcriber`, `panel`.
+> **Estado atual: pipeline completo, do login ao painel.**
+> Falta capturar o "Livro Digital", que é visualizador paginado por imagem e não
+> arquivo — fica registrado como `skipped`, não como erro.
 
 ## Os três sistemas
 
@@ -40,18 +39,24 @@ contrato entre eles — nenhum dos dois chama o outro por rede:
 
 ```
 ┌──────────── Bun / TypeScript ────────────┐   ┌──── Python / uv ────┐
-│ auth.ts     login Playwright → cookies   │   │ downloader.py       │
-│ scrape.ts   enumera curso→matéria→lição  │   │   yt-dlp            │
-│ agent.ts    gpt-4o-mini decide no DOM    │──▶│ transcriber.py      │
-│ naming.ts   convenção de nomes do acervo │   │   faster-whisper GPU│
-│ panel.ts    dashboard :7788              │◀──│ worker.py  loop     │
-│ cli.ts      entrypoint                   │   │                     │
+│ auth.ts    login Playwright (2 sistemas) │   │ downloader.py       │
+│ lesson.ts  navega o accordion, acha URLs │   │   yt-dlp + ffprobe  │
+│ cdn.ts     playlist→player→manifesto     │   │ transcriber.py      │
+│ agent.ts   gpt-4o-mini: títulos das aulas│──▶│   whisper (fallback)│
+│ naming.ts  convenção de nomes do acervo  │   │ pdftext.py          │
+│ scrape.ts  cataloga tudo no banco        │◀──│ worker.py   loop    │
+│ scan.ts    reconcilia com o disco        │   │                     │
+│ panel.ts   dashboard + explorador :7788  │   │                     │
 └──────────────────────────────────────────┘   └─────────────────────┘
                     └────────  focus.db (WAL)  ──────────┘
 ```
 
-O TS enfileira lições; o Python consome, baixa, transcreve e devolve o status.
+O TS cataloga e enfileira; o Python consome, baixa, transcreve e devolve status.
 Dá para rodar só o scrape (sem GPU) ou só a mídia (máquina ligada à noite).
+
+**A transcrição é fallback, não caminho padrão.** O manifesto HLS traz legenda
+oficial em português; o downloader a salva junto do vídeo e o item já sai
+`transcribe=done`. O Whisper só entra em vídeo que veio sem legenda.
 
 ## O agente (`gpt-4o-mini`)
 
@@ -106,20 +111,29 @@ os tem — use `bun run setup:py:gpu` apenas se quiser o venv autossuficiente.
 
 ## Uso
 
+Na ordem:
+
 ```bash
-bun run login              # os dois sistemas → state/{portal,ava}_state.json
-bun run login -- --ava     # só o Moodle
-bun run login -- --headed  # abre o navegador para depurar
-
-bun run scan      # reconcilia o acervo do disco com o banco
-bun run scrape    # cataloga curso → matéria → unidade → lição
-bun run media     # workers Python: baixa + transcreve
-bun run panel     # dashboard em http://127.0.0.1:7788
-bun run status
-
-bun test          # testes do lado TS
-bun run typecheck
+bun run login     # os dois sistemas → state/{portal,ava}_state.json
+bun run scrape    # cataloga disciplinas → módulos → itens no focus.db
+bun run scan      # marca como done o que JÁ está no disco (não rebaixa nada)
+bun run media     # workers Python: baixa vídeo+legenda e PDFs
+bun run panel     # http://127.0.0.1:7788
 ```
+
+O `scan` antes do `media` não é opcional: sem ele o worker rebaixaria os 202
+arquivos já capturados e rebaixaria dezenas de GB.
+
+```bash
+bun run status                  # resumo no terminal
+bun run requeue                 # reenfileira downloads com erro
+bun run explore -- --disciplina 603   # diagnóstico: o que o accordion devolve
+bun run media:no-gpu            # só baixa
+
+bun test && bun run typecheck
+```
+
+Todo comando aceita `--enrollment <id>`; `--headed` abre o navegador.
 
 ## Configuração (`.env`)
 

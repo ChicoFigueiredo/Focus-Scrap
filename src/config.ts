@@ -15,6 +15,16 @@ export const STATE_DIR = join(BASE_DIR, "state");
 /** symlink → /mnt/e/Marketing/Focus */
 export const REPOSITORY = join(BASE_DIR, "repository");
 
+/**
+ * Pasta do curso dentro do acervo.
+ *
+ * Não é derivável: o nome oficial é "Marketing Digital e Storytelling orientado
+ * a Tecnologias da Web", e quem organizou o disco abreviou à mão. Respeitar o
+ * que já existe importa mais do que gerar um nome novo e bonito — senão o
+ * acervo racha em duas pastas.
+ */
+export const CURSO_PASTA = process.env.FOCUS_CURSO_PASTA ?? "Marketing.Digital-Storytelling-Web";
+
 // --- Alvos --------------------------------------------------------------
 // Dois sistemas distintos, sessões independentes, MESMAS credenciais:
 //

@@ -132,6 +132,63 @@ function limpar(s: string): string {
   return (s ?? "").replace(/\s+/g, " ").trim();
 }
 
+export interface DisciplinaRef {
+  id: number;
+  nome: string;
+  posicao: number;
+  modulos: number;
+}
+
+/**
+ * Lista as disciplinas da matrícula.
+ *
+ * Vem de `GET /enrollments/details/<id>`, que exige o header `g-repatch`
+ * assinado em JS. Em vez de reimplementar a assinatura — que quebraria na
+ * primeira mudança do algoritmo —, abre-se a página e colhe-se a resposta que
+ * o próprio app faz.
+ */
+export async function lerDisciplinas(
+  enrollmentId: number,
+  opts: { headed?: boolean } = {},
+): Promise<DisciplinaRef[]> {
+  let browser: Browser | undefined;
+  try {
+    browser = await chromium.launch({ headless: !opts.headed });
+    const ctx = await browser.newContext({
+      storageState: STORAGE_STATE.portal, userAgent: USER_AGENT, locale: "pt-BR",
+    });
+    const page = await ctx.newPage();
+
+    let payload: unknown = null;
+    page.on("response", async (r) => {
+      if (!/enrollments\/details\//.test(r.url())) return;
+      payload = await r.json().catch(() => null);
+    });
+
+    const slug = opts && "slug" in opts ? (opts as { slug: string }).slug : await alunoSlug(page);
+    await page.goto(`${PORTAL_URL}/aluno/${slug}/meus-cursos/${enrollmentId}`, {
+      waitUntil: "domcontentloaded", timeout: 60_000,
+    });
+    for (let i = 0; i < 30 && !payload; i++) await page.waitForTimeout(1000);
+    if (!payload) throw new Error(`não recebi /enrollments/details/${enrollmentId} — sessão expirada? rode 'bun run login'`);
+
+    const cds = (payload as {
+      classroom?: { classroom_disciplines?: { discipline?: { id: number; name: string; modules?: unknown[] } }[] };
+    }).classroom?.classroom_disciplines ?? [];
+
+    return cds
+      .map((cd, i) => cd.discipline && {
+        id: cd.discipline.id,
+        nome: limpar(cd.discipline.name),
+        posicao: i + 1,
+        modulos: cd.discipline.modules?.length ?? 0,
+      })
+      .filter((d): d is DisciplinaRef => Boolean(d) && !PROIBIDO.test(d!.nome));
+  } finally {
+    await browser?.close();
+  }
+}
+
 /** Todos os iframes da página, inclusive aninhados. */
 function iframesDe(page: Page): string[] {
   const urls: string[] = [];

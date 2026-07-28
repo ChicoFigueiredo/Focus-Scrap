@@ -6,10 +6,12 @@
   "type": "module",
   "scripts": {
     "login": "bun run src/cli.ts login",
-    "scan": "bun run src/cli.ts scan",
     "scrape": "bun run src/cli.ts scrape",
+    "scan": "bun run src/cli.ts scan",
     "panel": "bun run src/cli.ts panel",
     "status": "bun run src/cli.ts status",
+    "requeue": "bun run src/cli.ts requeue",
+    "explore": "bun run src/cli.ts explore",
     "media": "uv run python -m focus.worker",
     "media:no-gpu": "uv run python -m focus.worker --no-transcribe",
     "setup": "bun install && bun run setup:browser && bun run setup:py",
