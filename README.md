@@ -54,9 +54,16 @@ contrato entre eles — nenhum dos dois chama o outro por rede:
 O TS cataloga e enfileira; o Python consome, baixa, transcreve e devolve status.
 Dá para rodar só o scrape (sem GPU) ou só a mídia (máquina ligada à noite).
 
-**A transcrição é fallback, não caminho padrão.** O manifesto HLS traz legenda
-oficial em português; o downloader a salva junto do vídeo e o item já sai
-`transcribe=done`. O Whisper só entra em vídeo que veio sem legenda.
+**Legenda: oficial quando existe, Whisper quando não.** Na família CDN o
+manifesto HLS traz legenda oficial em português e o downloader a salva junto do
+vídeo. Na família IESDE não há legenda — aí o `faster-whisper` transcreve na
+GPU e gera os três formatos do acervo (`.srt`, `.txt` e
+`-Fala.Cronometrada.txt`). O `scan` reconhece legenda que já está no disco e
+poupa a placa de reprocessar.
+
+O venv do uv é criado com `--system-site-packages` para enxergar o
+`faster-whisper` e o `torch` com CUDA já instalados no sistema, em vez de
+baixar ~2,5 GB de novo.
 
 ## O agente (`gpt-4o-mini`)
 
@@ -114,22 +121,37 @@ bun run setup          # bun install + playwright chromium + uv sync
 cp .env.example .env   # e preencha FOCUS_USER / FOCUS_PASSWORD
 ```
 
-O `uv sync` instala só as dependências leves. `faster-whisper` e `torch` ficam
-no extra `gpu` (~2.5 GB com CUDA) porque o Python do sistema desta máquina já
-os tem — use `bun run setup:py:gpu` apenas se quiser o venv autossuficiente.
+O `uv sync` instala só as dependências leves. `faster-whisper` e `torch` vêm do
+Python do sistema, porque esta máquina já os tem com CUDA — o venv é criado com
+`--system-site-packages` para enxergá-los:
+
+```bash
+uv venv --system-site-packages && uv sync --inexact
+```
+
+Em máquina que não tenha, `bun run setup:py:gpu` instala o extra `gpu`
+(~2,5 GB com CUDA).
 
 `ffmpeg` é dependência de sistema (yt-dlp e faster-whisper precisam dele).
 
 ## Uso
 
-Na ordem:
+Na prática, só isto:
 
 ```bash
 bun run login     # os dois sistemas → state/{portal,ava}_state.json
+bun run panel     # http://127.0.0.1:7788
+```
+
+O painel tem botões para **Catalogar**, **Recatalogar tudo**, **Reconciliar
+disco**, **Baixar e transcrever** e **Só baixar** — cada um roda como processo
+separado, com a linha de status ao vivo, e os demais ficam desabilitados
+enquanto um trabalha. Pelo terminal os mesmos passos são:
+
+```bash
 bun run scrape    # cataloga disciplinas → módulos → itens no focus.db
 bun run scan      # marca como done o que JÁ está no disco (não rebaixa nada)
-bun run media     # workers Python: baixa vídeo+legenda e PDFs
-bun run panel     # http://127.0.0.1:7788
+bun run media     # workers Python: baixa vídeo+legenda e transcreve o resto
 ```
 
 O `scan` antes do `media` não é opcional: sem ele o worker rebaixaria os 202

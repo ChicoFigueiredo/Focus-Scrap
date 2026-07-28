@@ -55,9 +55,17 @@ async function textoDoPdf(url: string, paginas = 12): Promise<string> {
   const p = Bun.spawn(["uv", "run", "python", "-m", "focus.pdftext", url, "--pages", String(paginas)], {
     cwd: BASE_DIR,
     stdout: "pipe",
-    stderr: "pipe",
+    // stderr descartado de propósito: `uv` escreve progresso aqui, e um pipe
+    // que ninguém lê enche e trava o processo filho para sempre — foi assim que
+    // uma disciplina ficou pendurada sem erro nem saída.
+    stderr: "ignore",
   });
-  const saida = await new Response(p.stdout).text();
+
+  // Teto próprio: PDF grande ou rede ruim não pode segurar o catálogo inteiro.
+  const saida = await Promise.race([
+    new Response(p.stdout).text(),
+    new Promise<string>((r) => setTimeout(() => { p.kill(); r(""); }, 120_000)),
+  ]);
   await p.exited;
   return p.exitCode === 0 ? saida : "";
 }
