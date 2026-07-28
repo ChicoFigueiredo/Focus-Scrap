@@ -43,10 +43,20 @@ function porModulo(lessons: LessonCapture[]): Map<number, { nome: string; lesson
   return m;
 }
 
+/** Disciplinas que já têm item no banco — base do `--continuar`. */
+function jaCatalogadas(db: Database): Set<number> {
+  const rs = db.query<{ id: number }, []>(`
+    SELECT DISTINCT d.id FROM disciplines d
+      JOIN modules m ON m.discipline_id = d.id
+      JOIN items   i ON i.module_id = m.id
+  `).all();
+  return new Set(rs.map((r) => r.id));
+}
+
 export async function scrape(
   db: Database,
   enrollmentId: number,
-  opts: { apenas?: number[]; aoProgredir?: (msg: string) => void } = {},
+  opts: { apenas?: number[]; continuar?: boolean; aoProgredir?: (msg: string) => void } = {},
 ): Promise<ResumoScrape> {
   const diga = opts.aoProgredir ?? (() => undefined);
   const avisos: string[] = [];
@@ -54,9 +64,51 @@ export async function scrape(
 
   let disciplinas = await lerDisciplinas(enrollmentId);
   if (opts.apenas?.length) disciplinas = disciplinas.filter((d) => opts.apenas!.includes(d.id));
+  if (opts.continuar) {
+    const prontas = jaCatalogadas(db);
+    const antes = disciplinas.length;
+    disciplinas = disciplinas.filter((d) => !prontas.has(d.id));
+    if (antes !== disciplinas.length) diga(`pulando ${antes - disciplinas.length} disciplina(s) já catalogada(s)`);
+  }
   diga(`${disciplinas.length} disciplina(s) a catalogar`);
 
   for (const d of disciplinas) {
+    // Cada disciplina é isolada: navegar o accordion abre um Chromium por vez e
+    // uma delas morrer (OOM, timeout, DOM inesperado) não pode levar junto as
+    // outras oito. Aconteceu — o processo caiu na 4ª e perdeu o resto da fila.
+    try {
+      await catalogarDisciplina(db, enrollmentId, d, {
+        diga, avisos,
+        contar: (m, i) => { nModulos += m; nItens += i; },
+      });
+    } catch (e) {
+      avisos.push(`${d.nome}: falhou e foi pulada — ${(e as Error).message.slice(0, 160)}`);
+      diga(`   ✗ ${d.nome}: ${(e as Error).message.slice(0, 100)}`);
+    }
+  }
+
+  for (const a of avisos) log(db, "error", "scrape", a);
+  log(db, "info", "scrape", `catalogou ${disciplinas.length} disciplina(s), ${nModulos} módulo(s), ${nItens} item(ns)`);
+  return { disciplinas: disciplinas.length, modulos: nModulos, itens: nItens, avisos };
+}
+
+interface Ctx {
+  diga: (m: string) => void;
+  avisos: string[];
+  contar: (modulos: number, itens: number) => void;
+}
+
+async function catalogarDisciplina(
+  db: Database,
+  enrollmentId: number,
+  disciplina: Awaited<ReturnType<typeof lerDisciplinas>>[number],
+  ctx: Ctx,
+): Promise<void> {
+  const { diga, avisos } = ctx;
+  let nModulos = 0, nItens = 0;
+
+  {
+    const d = disciplina;
     const pastaDisc = naming.pastaDisciplina(d.posicao, d.nome);
     const raiz = (...p: string[]) => naming.caminho(CURSO_PASTA, pastaDisc, ...p);
 
@@ -68,7 +120,7 @@ export async function scrape(
     const captura = await explorarDisciplina(enrollmentId, d.id);
     if (!captura.lessons.length) {
       avisos.push(`${d.nome}: accordion não devolveu lesson nenhuma`);
-      continue;
+      return;
     }
 
     const grupos = porModulo(captura.lessons);
@@ -84,7 +136,7 @@ export async function scrape(
       const aulas = await iesde.lerPlaylist(urlIesde);
       if (!aulas.length) {
         avisos.push(`${d.nome}: playlist IESDE não devolveu aula (${urlIesde})`);
-        continue;
+        return;
       }
       for (const g of iesde.agrupar(aulas)) {
         const pastaMod = naming.pastaModulo(g.posicao, g.titulo);
@@ -115,7 +167,8 @@ export async function scrape(
         nItens++;
       }
       diga(`   IESDE — ${aulas.length} aulas em ${iesde.agrupar(aulas).length} módulo(s)`);
-      continue;
+      ctx.contar(nModulos, nItens);
+      return;
     }
 
     // ---- família CDN da produtora --------------------------------------
@@ -156,9 +209,11 @@ export async function scrape(
         nItens++;
       }
 
-      // Materiais continuam a numeração dos vídeos — 4 vídeos → Ebook 05.
+      // Materiais continuam a numeração dos vídeos — 4 vídeos → Ebook 05,
+      // Slides 06. O Ebook vem primeiro porque é assim no acervo, mesmo que o
+      // accordion liste "Material em PDF" (= Slides) antes de "Livro Digital".
       for (const [kind, url, marcador] of [
-        ["pdf", pdf, "Slides"], ["livro", livro, "Ebook"],
+        ["livro", livro, "Ebook"], ["pdf", pdf, "Slides"],
       ] as [Kind, string | null, naming.Marcador][]) {
         if (!url) continue;
         pos++;
@@ -175,7 +230,5 @@ export async function scrape(
     }
   }
 
-  for (const a of avisos) log(db, "error", "scrape", a);
-  log(db, "info", "scrape", `catalogou ${disciplinas.length} disciplina(s), ${nModulos} módulo(s), ${nItens} item(ns)`);
-  return { disciplinas: disciplinas.length, modulos: nModulos, itens: nItens, avisos };
+  ctx.contar(nModulos, nItens);
 }

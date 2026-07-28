@@ -76,6 +76,17 @@ reaparece quando o padrão quebra — é um mecanismo de auto-reparo, não um pa
 do caminho feliz. Sem chave de API, cai em heurística local: o pipeline nunca
 para por falta de LLM.
 
+## Duas famílias de conteúdo
+
+A disciplina 1 usa o CDN da produtora (HLS no CloudFront, com legenda oficial);
+as outras oito usam **IESDE** (MP4 com URL assinada). Não é detalhe: tratar as
+duas como uma só fazia 8 de 9 disciplinas voltarem sem vídeo nenhum.
+
+Na família CDN a plataforma não expõe título de aula — só "Aula 01" — e é aí
+que o agente entra. Na IESDE os títulos vêm prontos, e o agrupamento em módulos
+sai de títulos consecutivos iguais. Detalhes em
+[docs/reconhecimento.md](docs/reconhecimento.md).
+
 ## Acervo
 
 `repository` é symlink → `/mnt/e/Marketing/Focus`. A convenção abaixo foi

@@ -201,6 +201,21 @@ function iframesDe(page: Page): string[] {
   return [...new Set(urls)];
 }
 
+/**
+ * Reconhece que já vimos tudo o que essa disciplina tem a dar.
+ *
+ * Numa disciplina IESDE a playlist inteira (dezenas de aulas, todos os módulos)
+ * sai de UMA URL — continuar clicando lesson por lesson não acrescenta nada e
+ * custa ~5s por clique. Uma disciplina chegou a ficar 40 minutos navegando à
+ * toa. Achou IESDE mais um material, pode parar.
+ */
+function jaTemTudo(lessons: LessonCapture[]): boolean {
+  const temIesde = lessons.some(
+    (l) => /\/iesde\//i.test(l.fontes.playlist ?? "") || l.iframes.some((u) => /\/iesde\//i.test(u)),
+  );
+  return temIesde && lessons.some((l) => l.fontes.arquivo);
+}
+
 export async function explorarDisciplina(
   enrollmentId: number,
   disciplinaId: number,
@@ -304,7 +319,9 @@ export async function explorarDisciplina(
         cap.rede = [...balde];
         cap.fontes = classificar([...cap.iframes, ...cap.links, ...cap.rede]);
         lessons.push(cap);
+        if (jaTemTudo(lessons)) break;
       }
+      if (jaTemTudo(lessons)) break;
 
       // Recolhe antes do próximo módulo: `abertas()` conta lessons visíveis no
       // accordion inteiro, então dois módulos abertos confundiriam a contagem.

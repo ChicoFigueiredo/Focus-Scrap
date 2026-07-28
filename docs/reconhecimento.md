@@ -56,6 +56,34 @@ quebraria na primeira mudança do algoritmo.
 | `GET /enrollments/<id>/disciplines/<disc>` | módulos com nome/posição + lessons |
 | `GET /exams?course_id=<id>` | provas — **nunca tocar** |
 
+## São DUAS famílias de conteúdo, não uma
+
+A descoberta mais cara do projeto. A disciplina 1 usa o CDN da produtora; as
+outras oito usam **IESDE**, um sistema completamente diferente. Tratar as duas
+como uma só fazia 8 de 9 disciplinas voltarem com zero vídeo — e quase me
+convenceu de que elas não tinham conteúdo, sendo que o disco já guardava 143
+arquivos de uma delas.
+
+| | CDN da produtora | IESDE |
+|---|---|---|
+| Playlist | `grupofocus.b-cdn.net/playlist_videoaulas/…` | `www5.faculdadefocus.com.br/iesde/<turma>/lessons/playlist` |
+| Vídeo | HLS no CloudFront | MP4 direto, **URL assinada e expirável** |
+| Legenda | trilha no manifesto | não observada |
+| Títulos | **não existem** ("Aula 01") | vêm prontos na playlist |
+| Módulos | vêm do accordion | vêm de títulos consecutivos iguais |
+
+Curiosamente o markup da playlist é o mesmo nos dois (`<li data-src>` com
+`<span>` de título) — só muda o alvo.
+
+Consequências no desenho:
+
+- O `source_url` de um item IESDE é a página `/show`, **não** o MP4: o link é
+  assinado com `exp` e guardar ele daria uma fila que apodrece antes de ser
+  consumida. Quem resolve é o downloader, na hora.
+- O agrupamento IESDE por título consecutivo reproduz o acervo exatamente:
+  10 pastas com 6,6,4,7,4,5,3,2,5,4 vídeos, os mesmos 46 do disco.
+- O agente só é chamado na família CDN. Na IESDE não há ambiguidade a resolver.
+
 ## Pipeline de mídia (tudo público, sem auth)
 
 ```

@@ -83,7 +83,10 @@ function arvore(db: Database): LinhaArvore[] {
   `).all();
 }
 
-const PAGINA = String.raw`
+// Template literal NORMAL, não String.raw: o script embutido usa crases e `${}`
+// escapados, e String.raw preservaria as barras invertidas, entregando ao
+// navegador um JS com erro de sintaxe — a página abria só com o cabeçalho.
+const PAGINA = `
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>focus-scrap</title>
 <style>

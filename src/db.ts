@@ -180,6 +180,17 @@ export function upsertItem(
   );
 }
 
+/**
+ * Aponta o item para o caminho que existe de fato no disco.
+ *
+ * Usado pelo `scan` mesmo em item PENDENTE: o destino precisa apontar para a
+ * pasta que já existe, senão o download cria uma pasta irmã com grafia
+ * diferente e o acervo racha em dois.
+ */
+export function definirCaminho(db: Database, id: number, relPath: string): void {
+  db.run(`UPDATE items SET rel_path=?, updated_at=datetime('now') WHERE id=?`, [relPath, id]);
+}
+
 /** Marca como já capturado — usado pelo `scan` ao achar o arquivo no disco. */
 export function marcarBaixado(db: Database, id: number, bytes: number, relPath?: string): void {
   db.run(

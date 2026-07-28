@@ -54,7 +54,7 @@ switch (command) {
   case "scrape": {
     const db = connect();
     const apenas = rest.includes("--disciplina") ? [valor("disciplina", 0)] : undefined;
-    const r = await scrape(db, MATRICULA, { apenas, aoProgredir: (m) => console.log(m) });
+    const r = await scrape(db, MATRICULA, { apenas, continuar: flag("continuar"), aoProgredir: (m) => console.log(m) });
     console.log(`\n${r.disciplinas} disciplina(s), ${r.modulos} módulo(s), ${r.itens} item(ns)`);
     if (r.avisos.length) {
       console.log("\navisos:");
@@ -67,7 +67,7 @@ switch (command) {
   case "scan": {
     const db = connect();
     const r = scan(db, { aoProgredir: (m) => console.log(m) });
-    console.log(`\n${r.casados}/${r.varridos} já no disco, ${r.semArquivo} pendente(s)`);
+    console.log(`\n${r.casados}/${r.varridos} já no disco, ${r.renomeados} destino(s) reapontado(s), ${r.semArquivo} pendente(s)`);
     for (const o of r.orfaos) console.log(" ⚠", o);
     db.close();
     break;
