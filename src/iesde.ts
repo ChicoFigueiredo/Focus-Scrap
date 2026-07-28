@@ -30,12 +30,21 @@ const RE_SPAN = /<span[^>]*>([\s\S]*?)<\/span>/i;
 const RE_FONTE = /<source\b[^>]*\bsrc="([^"]+)"/i;
 
 /**
+ * Remove o sufixo de fatiamento do título.
+ *
  * O acervo não repete "- parte 01" no nome do arquivo: o prefixo `MM.VV` já diz
- * qual parte é. `01.01-Premissas.e.perspectivas.a.respeito.do.consumidor.mp4`,
+ * qual pedaço é. `01.01-Premissas.e.perspectivas.a.respeito.do.consumidor.mp4`,
  * não `…-parte.01.mp4`.
+ *
+ * A palavra varia entre disciplinas — umas usam "parte", outras "seção". Tratar
+ * só "parte" fazia disciplinas inteiras não agruparem: "Tecnologia Web" voltou
+ * com 37 aulas em 37 módulos, um por vídeo, quando deveriam ser poucos assuntos
+ * com várias seções cada.
  */
 export function tituloLimpo(bruto: string): string {
-  return bruto.replace(/\s*[-–]\s*parte\s*\d+\s*$/i, "").trim();
+  return bruto
+    .replace(/\s*[-–—]\s*(parte|se[çc][ãa]o|aula|m[óo]dulo|cap[íi]tulo)\s*\d+\s*$/i, "")
+    .trim();
 }
 
 export interface AulaIesde {

@@ -46,6 +46,16 @@ switch (command) {
       if (l.erro) console.log(`   erro: ${l.erro}`);
       for (const [rotulo, u] of Object.entries(l.fontes))
         if (rotulo !== "tipo" && u) console.log(`   ${rotulo.padEnd(12)} ${u}`);
+      // Sem isto o diagnóstico fica cego justamente quando mais importa: uma
+      // lesson que o classificador não reconhece imprimia uma linha vazia, e o
+      // dado cru — que revelaria a família de conteúdo nova — ficava escondido.
+      if (l.fontes.tipo === "desconhecido") {
+        for (const u of l.iframes) console.log(`   iframe cru   ${u}`);
+        for (const u of l.rede) console.log(`   rede crua    ${u}`);
+        for (const u of l.links) console.log(`   link cru     ${u}`);
+        if (!l.iframes.length && !l.rede.length && !l.links.length)
+          console.log(`   (nada capturado) texto: ${l.texto.slice(0, 110)}`);
+      }
       console.log();
     }
     break;
@@ -67,7 +77,7 @@ switch (command) {
   case "scan": {
     const db = connect();
     const r = scan(db, { aoProgredir: (m) => console.log(m) });
-    console.log(`\n${r.casados}/${r.varridos} já no disco, ${r.renomeados} destino(s) reapontado(s), ${r.semArquivo} pendente(s)`);
+    console.log(`\n${r.casados}/${r.varridos} já no disco · ${r.transcritos} já transcrito(s) · ${r.renomeados} reapontado(s) · ${r.semArquivo} pendente(s)`);
     for (const o of r.orfaos) console.log(" ⚠", o);
     db.close();
     break;

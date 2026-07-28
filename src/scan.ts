@@ -18,7 +18,7 @@ import { existsSync, readdirSync, statSync } from "node:fs";
 import { basename, dirname, join, relative, sep } from "node:path";
 
 import { REPOSITORY } from "./config.ts";
-import { definirCaminho, log, marcarBaixado } from "./db.ts";
+import { definirCaminho, log, marcarBaixado, marcarTranscrito } from "./db.ts";
 import { chave, prefixo } from "./naming.ts";
 
 export interface ResumoScan {
@@ -27,6 +27,8 @@ export interface ResumoScan {
   semArquivo: number;
   /** Itens cujo destino foi reapontado para pasta já existente no disco. */
   renomeados: number;
+  /** Vídeos cuja legenda já estava no disco — poupados da GPU. */
+  transcritos: number;
   orfaos: string[];
 }
 
@@ -95,13 +97,13 @@ function listarArquivos(dir: string): string[] {
 export function scan(db: Database, opts: { aoProgredir?: (m: string) => void } = {}): ResumoScan {
   const diga = opts.aoProgredir ?? (() => undefined);
   const orfaos: string[] = [];
-  let varridos = 0, casados = 0, semArquivo = 0, renomeados = 0;
+  let varridos = 0, casados = 0, semArquivo = 0, renomeados = 0, transcritos = 0;
 
   const itens = db.query<{
     id: number; kind: string; position: number; mod_pos: number;
-    rel_path: string | null; download_status: string;
+    rel_path: string | null; download_status: string; transcribe_status: string;
   }, []>(`
-    SELECT i.id, i.kind, i.position, m.position AS mod_pos, i.rel_path, i.download_status
+    SELECT i.id, i.kind, i.position, m.position AS mod_pos, i.rel_path, i.download_status, i.transcribe_status
       FROM items i
       JOIN modules m ON m.id = i.module_id
       JOIN disciplines d ON d.id = m.discipline_id
@@ -148,9 +150,23 @@ export function scan(db: Database, opts: { aoProgredir?: (m: string) => void } =
       diga(`   ✓ ${achado} (${(bytes / 1e6).toFixed(1)} MB)`);
     }
     casados++;
+
+    // Transcrição que já existe no disco não pode voltar para a GPU. Sem isto o
+    // Whisper reprocessaria dezenas de vídeos que já têm legenda ao lado —
+    // horas de placa para reescrever arquivo idêntico.
+    if (it.kind === "video") {
+      const semExt = achado.replace(/\.[^.]+$/, "");
+      const temLegenda = listarArquivos(dir).some(
+        (f) => f.startsWith(semExt) && /\.(srt|vtt)$|-Fala\.Cronometrada\.txt$/i.test(f),
+      );
+      if (temLegenda && it.transcribe_status !== "done") {
+        marcarTranscrito(db, it.id);
+        transcritos++;
+      }
+    }
   }
 
   log(db, "info", "scan",
-    `reconciliou ${casados}/${varridos} item(ns); ${renomeados} destino(s) reapontado(s); ${semArquivo} sem arquivo`);
-  return { varridos, casados, semArquivo, renomeados, orfaos };
+    `reconciliou ${casados}/${varridos}; ${transcritos} com legenda já no disco; ${renomeados} reapontado(s); ${semArquivo} sem arquivo`);
+  return { varridos, casados, semArquivo, renomeados, transcritos, orfaos };
 }

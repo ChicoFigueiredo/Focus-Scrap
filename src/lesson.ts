@@ -28,7 +28,7 @@ export const PROIBIDO = /prova|avalia|simulad|exam|question[áa]ri|refazer/i;
 
 /** Extensões/hosts que valem como material capturável. */
 const MIDIA =
-  /\.(pdf|mp4|m3u8|epub|pptx?|docx?|zip)(\?|$)|b-cdn\.net|onilearning|cloudfront\.net|drive\.google|docs\.google/i;
+  /\.(pdf|mp4|m3u8|epub|pptx?|docx?|zip)(\?|$)|b-cdn\.net|onilearning|cloudfront\.net|videoiesde|\/iesde\/|drive\.google|docs\.google/i;
 
 const RUIDO = /\.(css|js|png|jpe?g|svg|gif|woff2?|ico)(\?|$)|imagens\/|fonts\.|analytics|clarity|doubleclick|tiktok/i;
 
@@ -63,9 +63,16 @@ export function classificar(urls: string[]): Fontes {
   const acha = (re: RegExp) => urls.find((u) => re.test(u));
   const f: Fontes = { tipo: "desconhecido" };
 
-  f.playlist = acha(/playlist_videoaulas\/.*\.html/i);
-  f.player = acha(/player\.php\?/i);
-  f.arquivo = acha(/componente\.php\?.*saida=arquivo/i);
+  // Playlist: as DUAS famílias. A da produtora é um HTML no b-cdn; a do IESDE é
+  // uma rota no www5. Reconhecer só a primeira deixava toda lesson IESDE como
+  // "desconhecida" — e o diagnóstico não mostrava por quê.
+  f.playlist = acha(/playlist_videoaulas\/.*\.html/i) ?? acha(/\/iesde\/\d+\/lessons\/playlist/i);
+  f.player = acha(/player\.php\?/i) ?? acha(/\/iesde\/lessons\/\d+\/show/i);
+
+  // Material: também dois formatos. `componente.php?saida=arquivo` na família da
+  // produtora; no IESDE o PDF vem do MESMO CDN de vídeo, com URL assinada
+  // terminando em /file.pdf.
+  f.arquivo = acha(/componente\.php\?.*saida=arquivo/i) ?? acha(/videoiesde[^\s]*\.pdf(\?|$)/i);
   f.visualizador = acha(/componente\.php\?.*onepage=/i);
 
   // Prefere o manifesto master (?v=oni): é o que lista 360/720/1080 e a legenda.

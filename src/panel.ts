@@ -15,8 +15,78 @@ import type { Database } from "bun:sqlite";
 import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 
-import { PANEL_HOST, REPOSITORY } from "./config.ts";
-import { reenfileirar, stats } from "./db.ts";
+import { BASE_DIR, PANEL_HOST, REPOSITORY } from "./config.ts";
+import { log, reenfileirar, stats } from "./db.ts";
+
+/**
+ * Tarefas que o painel dispara como processo separado.
+ *
+ * São processos, não chamadas em linha, por dois motivos: `scrape` abre Chromium
+ * e `media` baixa gigabytes — segurar isso dentro do handler HTTP travaria o
+ * painel justamente enquanto há o que mostrar. Cada tarefa escreve no mesmo
+ * SQLite, então o progresso aparece na atualização seguinte.
+ */
+const TAREFAS: Record<string, { rotulo: string; cmd: string[] }> = {
+  scrape: { rotulo: "Catalogar", cmd: ["bun", "run", "src/cli.ts", "scrape", "--continuar"] },
+  "scrape-tudo": { rotulo: "Recatalogar tudo", cmd: ["bun", "run", "src/cli.ts", "scrape"] },
+  scan: { rotulo: "Reconciliar disco", cmd: ["bun", "run", "src/cli.ts", "scan"] },
+  media: { rotulo: "Baixar e transcrever", cmd: ["uv", "run", "python", "-m", "focus.worker"] },
+  "media-sem-gpu": { rotulo: "Só baixar", cmd: ["uv", "run", "python", "-m", "focus.worker", "--no-transcribe"] },
+};
+
+interface Execucao {
+  desde: number;
+  proc: Bun.Subprocess;
+  ultimaLinha: string;
+}
+
+const rodando = new Map<string, Execucao>();
+
+function disparar(db: Database, nome: string): { ok: boolean; msg: string } {
+  const t = TAREFAS[nome];
+  if (!t) return { ok: false, msg: `tarefa desconhecida: ${nome}` };
+  // Uma execução por tarefa: dois `media` simultâneos brigariam pelo mesmo
+  // arquivo parcial, e dois `scrape` abririam Chromium em dobro.
+  if (rodando.has(nome)) return { ok: false, msg: `${t.rotulo} já está rodando` };
+
+  const proc = Bun.spawn(t.cmd, { cwd: BASE_DIR, stdout: "pipe", stderr: "pipe" });
+  const exec: Execucao = { desde: Date.now(), proc, ultimaLinha: "iniciando…" };
+  rodando.set(nome, exec);
+  log(db, "info", "painel", `${t.rotulo}: iniciado`);
+
+  // Lê a saída para alimentar a linha de status; sem isso o pipe enche e o
+  // processo bloqueia na primeira página de stdout.
+  (async () => {
+    const leitor = (proc.stdout as ReadableStream<Uint8Array>).getReader();
+    const dec = new TextDecoder();
+    for (;;) {
+      const { done, value } = await leitor.read();
+      if (done) break;
+      const linhas = dec.decode(value, { stream: true }).split("\n").filter((l) => l.trim());
+      if (linhas.length) exec.ultimaLinha = linhas.at(-1)!.slice(0, 120);
+    }
+  })().catch(() => undefined);
+
+  proc.exited.then((code) => {
+    rodando.delete(nome);
+    log(db, code === 0 ? "info" : "error", "painel",
+      `${t.rotulo}: ${code === 0 ? "concluído" : `terminou com código ${code}`}`);
+  });
+
+  return { ok: true, msg: `${t.rotulo} iniciado` };
+}
+
+function estadoTarefas() {
+  return Object.entries(TAREFAS).map(([nome, t]) => {
+    const e = rodando.get(nome);
+    return {
+      nome, rotulo: t.rotulo,
+      rodando: !!e,
+      segundos: e ? Math.round((Date.now() - e.desde) / 1000) : 0,
+      ultimaLinha: e?.ultimaLinha ?? "",
+    };
+  });
+}
 
 const TIPOS: Record<string, string> = {
   ".mp4": "video/mp4", ".webm": "video/webm", ".mkv": "video/x-matroska",
@@ -116,6 +186,7 @@ const PAGINA = `
  .done{color:var(--ok)}.error{color:var(--erro)}.pending{color:var(--pend)}.skipped{color:var(--fraco)}
  button{background:var(--ac);color:#fff;border:0;border-radius:7px;padding:7px 13px;cursor:pointer;font:inherit}
  button.sec{background:transparent;color:var(--txt);border:1px solid var(--linha)}
+ button:disabled{opacity:.45;cursor:not-allowed}
  .abrir{color:var(--ac);cursor:pointer;text-decoration:none}
  #visor{position:fixed;inset:0;background:#000c;display:none;align-items:center;justify-content:center;padding:24px;z-index:9}
  #visor>div{background:var(--card);border-radius:12px;padding:14px;max-width:min(1000px,95vw);width:100%}
@@ -132,7 +203,7 @@ const PAGINA = `
   <button class="sec" onclick="req('download')">Reenfileirar erros</button>
   <button class="sec" onclick="carregar()">Atualizar</button>
 </header>
-<main><div id="painel"></div><div id="curso" hidden></div></main>
+<main><div id="acoes" class="cartao" style="margin-bottom:20px"></div><div id="painel"></div><div id="curso" hidden></div></main>
 <div id="visor" onclick="if(event.target.id==='visor')fechar()"><div id="visor-c"></div></div>
 <script>
 const $ = s => document.querySelector(s);
@@ -142,7 +213,24 @@ const mb = b => !b ? '' : b > 1e9 ? (b/1e9).toFixed(2)+' GB' : (b/1e6).toFixed(1
 let dados = null;
 async function carregar(){
   dados = await (await fetch('/api/tudo')).json();
-  pintarPainel(); pintarCurso();
+  pintarAcoes(); pintarPainel(); pintarCurso();
+}
+function pintarAcoes(){
+  const ativa = dados.tarefas.some(t=>t.rodando);
+  $('#acoes').innerHTML = \`
+    <div class="rot" style="margin-bottom:10px">Ações</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      \${dados.tarefas.map(t=>\`<button \${t.rodando||ativa?'disabled':''} onclick="rodar('\${t.nome}')"
+        class="\${t.nome.startsWith('media')?'':'sec'}">\${t.rodando?'▶ ':''}\${esc(t.rotulo)}\${t.rodando?\` (\${t.segundos}s)\`:''}</button>\`).join('')}
+    </div>
+    \${dados.tarefas.filter(t=>t.rodando).map(t=>\`<div class="fraco" style="margin-top:10px;font-size:13px">
+        <b>\${esc(t.rotulo)}</b> — \${esc(t.ultimaLinha)}</div>\`).join('')}
+    \${ativa?'':'<div class="fraco" style="margin-top:10px;font-size:12px">Ordem: Catalogar → Reconciliar disco → Baixar e transcrever. O reconciliar evita rebaixar o que já está no disco.</div>'}\`;
+}
+async function rodar(nome){
+  const r = await (await fetch('/api/run?tarefa='+nome,{method:'POST'})).json();
+  if(!r.ok) alert(r.msg);
+  carregar();
 }
 function pintarPainel(){
   const s = dados.stats, ev = dados.eventos;
@@ -222,8 +310,13 @@ export function servir(db: Database, porta: number): void {
         return Response.json({
           stats: stats(db),
           arvore: arvore(db),
+          tarefas: estadoTarefas(),
           eventos: db.query(`SELECT at, level, source, message FROM events ORDER BY id DESC LIMIT 60`).all(),
         });
+      }
+
+      if (rota === "/api/run" && req.method === "POST") {
+        return Response.json(disparar(db, url.searchParams.get("tarefa") ?? ""));
       }
 
       if (rota === "/api/requeue" && req.method === "POST") {

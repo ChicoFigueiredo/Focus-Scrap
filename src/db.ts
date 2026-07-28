@@ -191,6 +191,18 @@ export function definirCaminho(db: Database, id: number, relPath: string): void 
   db.run(`UPDATE items SET rel_path=?, updated_at=datetime('now') WHERE id=?`, [relPath, id]);
 }
 
+/**
+ * Marca a transcrição como pronta sem passar pela GPU.
+ *
+ * Usado quando a legenda já existe: veio oficial no manifesto HLS, ou já estava
+ * no acervo desde antes deste projeto.
+ */
+export function marcarTranscrito(db: Database, id: number): void {
+  db.run(
+    `UPDATE items SET transcribe_status='done', transcribe_error=NULL,
+            updated_at=datetime('now') WHERE id=?`, [id]);
+}
+
 /** Marca como já capturado — usado pelo `scan` ao achar o arquivo no disco. */
 export function marcarBaixado(db: Database, id: number, bytes: number, relPath?: string): void {
   db.run(
