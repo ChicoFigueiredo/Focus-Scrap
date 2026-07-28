@@ -29,17 +29,23 @@ fi
 echo "disciplinas a renovar: ${DISCIPLINAS[*]:-nenhuma}"
 for id in "${DISCIPLINAS[@]}"; do
   echo "--- recatalogando $id ---"
-  bun run src/cli.ts scrape --disciplina "$id" 2>&1 | tail -3
+  # sem pipe: `| tail` esconde o progresso e me fez diagnosticar travamento
+  # onde havia só lentidão.
+  bun run src/cli.ts scrape --disciplina "$id" 2>&1
 done
 
 echo "--- reenfileirando erros ---"
 bun run src/cli.ts requeue
 
 echo "--- baixando e transcrevendo ---"
+# Duas passadas: a primeira costuma deixar alguns itens para trás por
+# sobrecarga do servidor, e a segunda pega o resto com a fila já vazia.
+uv run python -m focus.worker
+bun run src/cli.ts requeue
 uv run python -m focus.worker
 
 echo "--- conferência de integridade ---"
 uv run python -m focus.verify
 
 echo "--- reconciliando com o disco ---"
-bun run src/cli.ts scan | tail -2
+bun run src/cli.ts scan

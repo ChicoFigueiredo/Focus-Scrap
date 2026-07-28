@@ -116,21 +116,32 @@ export async function scrape(
     // Cada disciplina é isolada: navegar o accordion abre um Chromium por vez e
     // uma delas morrer (OOM, timeout, DOM inesperado) não pode levar junto as
     // outras oito. Aconteceu — o processo caiu na 4ª e perdeu o resto da fila.
+    // Teto de tempo por disciplina. Sem ele o catálogo trava indefinidamente:
+    // uma disciplina passou 40 minutos no accordion sem produzir um item, e as
+    // seguintes nunca chegaram a ser tentadas.
+    //
+    // O `clearTimeout` no finally NÃO é detalhe: sem ele cada disciplina deixa
+    // um timer de 30 minutos pendurado, e o processo — mesmo tendo terminado o
+    // trabalho e impresso o resultado — não sai, porque o timer segura o event
+    // loop do Bun. Foi assim que um script de recuperação ficou parado depois
+    // da primeira disciplina, parecendo travamento de navegação.
+    let alarme: ReturnType<typeof setTimeout> | undefined;
     try {
-      // Teto de tempo por disciplina. Sem ele o catálogo trava indefinidamente:
-      // uma disciplina passou 40 minutos no accordion sem produzir um item, e
-      // as seguintes nunca chegaram a ser tentadas. Melhor pular e registrar.
       await Promise.race([
         catalogarDisciplina(db, enrollmentId, d, {
           diga, avisos,
           contar: (m, i) => { nModulos += m; nItens += i; },
         }),
-        new Promise<never>((_, rej) =>
-          setTimeout(() => rej(new Error(`estourou ${TETO_MIN} min de navegação`)), TETO_MIN * 60_000)),
+        new Promise<never>((_, rej) => {
+          alarme = setTimeout(
+            () => rej(new Error(`estourou ${TETO_MIN} min de navegação`)), TETO_MIN * 60_000);
+        }),
       ]);
     } catch (e) {
       avisos.push(`${d.nome}: falhou e foi pulada — ${(e as Error).message.slice(0, 160)}`);
       diga(`   ✗ ${d.nome}: ${(e as Error).message.slice(0, 100)}`);
+    } finally {
+      clearTimeout(alarme);
     }
   }
 

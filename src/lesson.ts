@@ -165,6 +165,8 @@ export async function lerDisciplinas(
       storageState: STORAGE_STATE.portal, userAgent: USER_AGENT, locale: "pt-BR",
     });
     const page = await ctx.newPage();
+    page.setDefaultTimeout(45_000);
+    page.setDefaultNavigationTimeout(60_000);
 
     let payload: unknown = null;
     page.on("response", async (r) => {
@@ -238,6 +240,14 @@ export async function explorarDisciplina(
       acceptDownloads: false,
     });
     const page = await ctx.newPage();
+
+    // Teto por OPERAÇÃO, não só por disciplina. Sem isto, quando o Chromium
+    // morre no meio (aconteceu: máquina sob carga, browser derrubado), a
+    // chamada do Playwright fica esperando para sempre um navegador que não
+    // existe mais — 23 minutos parado, 0,6% de CPU, nenhum processo vivo.
+    // Com o teto, a operação falha rápido e a disciplina é pulada com motivo.
+    page.setDefaultTimeout(45_000);
+    page.setDefaultNavigationTimeout(60_000);
 
     // Coletor de rede: acumula no balde da lesson corrente.
     let balde = new Set<string>();
