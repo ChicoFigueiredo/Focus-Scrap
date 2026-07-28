@@ -16,7 +16,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 
 import { BASE_DIR, CURSO_PASTA, PANEL_HOST, REPOSITORY } from "./config.ts";
-import { ARQ_INDICE, ARQ_TRANSCRICAO, PASTA as PASTA_ESCRITOS } from "./escritos.ts";
+import { ARQ_INDICE, ARQ_TRANSCRICAO, PASTA as PASTA_ESCRITOS, arqDisciplina } from "./escritos.ts";
 import { lerTrechos, srtParaVtt } from "./legenda.ts";
 import { PAGINA } from "./panel-ui.ts";
 import { log, reenfileirar, stats } from "./db.ts";
@@ -236,7 +236,7 @@ function arvore(db: Database): LinhaArvore[] {
 
 /** Estatísticas por disciplina — alimentam a combo e o painel de métricas. */
 function disciplinas(db: Database) {
-  return db.query(`
+  const rs = db.query<{ id: number; nome: string; pasta: string | null }, []>(`
     SELECT d.id, d.position AS posicao, d.name AS nome,
            COUNT(DISTINCT m.id)                              AS modulos,
            COUNT(i.id)                                       AS itens,
@@ -244,12 +244,18 @@ function disciplinas(db: Database) {
            COALESCE(SUM(i.kind='video'), 0)                  AS videos,
            COALESCE(SUM(i.kind='video' AND i.transcribe_status='done'), 0) AS transcritos,
            COALESCE(SUM(i.bytes), 0)                         AS bytes,
-           COALESCE(SUM(i.duration), 0)                      AS duracao
+           COALESCE(SUM(i.duration), 0)                      AS duracao,
+           d.folder                                          AS pasta
       FROM disciplines d
       LEFT JOIN modules m ON m.discipline_id = d.id
       LEFT JOIN items   i ON i.module_id = m.id
      GROUP BY d.id ORDER BY d.position
   `).all();
+  // Caminho da transcrição da disciplina, pronto para a UI abrir sem recalcular.
+  return rs.map((d) => ({
+    ...d,
+    transcricao: d.pasta ? `../${d.pasta}/${PASTA_ESCRITOS}/${arqDisciplina(d.nome)}` : null,
+  }));
 }
 
 /**

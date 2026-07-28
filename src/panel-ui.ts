@@ -191,7 +191,18 @@ function pintarArvore(){
     if(!mods.has(r.mod_id)) mods.set(r.mod_id, {nome:r.mod_nome, pos:r.mod_pos, itens:[]});
     mods.get(r.mod_id).itens.push(r);
   }
-  $('#arvore').innerHTML = [...mods.values()].sort((a,b)=>a.pos-b.pos).map(m => {
+  const d0 = disc();
+  // Capítulo 00: a transcrição desta disciplina, antes dos módulos — mesma
+  // ordem em que aparece no disco.
+  const cap00 = d0?.transcricao
+    ? \`<details class="mod" open><summary><span>00 — Materiais Escritos</span><span class="tag">1</span></summary>
+        <div class="item \${itemAtual==='d'+d0.id?'on':''}" onclick="abrirMd('\${d0.transcricao}','d\${d0.id}')">
+          <span class="pt done"></span><span class="n">00.01</span>
+          <span class="rotulo">Transcrição da disciplina</span><span class="tag">md</span></div>
+       </details>\`
+    : '';
+
+  $('#arvore').innerHTML = cap00 + [...mods.values()].sort((a,b)=>a.pos-b.pos).map(m => {
     const ok = m.itens.filter(i=>i.download_status==='done').length;
     return \`<details class="mod" open>
       <summary><span>\${dd(m.pos)} — \${esc(m.nome)}</span><span class="tag">\${ok}/\${m.itens.length}</span></summary>
@@ -209,7 +220,7 @@ function pintarArvoreEscritos(){
   const mats = dados.arvore.filter(r => r.item_id != null && r.kind !== 'video' && r.download_status === 'done');
   const porDisc = new Map();
   for (const r of mats){
-    if(!porDisc.has(r.disc_id)) porDisc.set(r.disc_id, {nome:r.disc_nome, pos:r.disc_pos, itens:[]});
+    if(!porDisc.has(r.disc_id)) porDisc.set(r.disc_id, {id:r.disc_id, nome:r.disc_nome, pos:r.disc_pos, itens:[]});
     porDisc.get(r.disc_id).itens.push(r);
   }
   $('#arvore').innerHTML =
@@ -220,6 +231,10 @@ function pintarArvoreEscritos(){
     + [...porDisc.values()].sort((a,b)=>a.pos-b.pos).map(d =>
       \`<details class="mod" open><summary><span>\${dd(d.pos)} — \${esc(d.nome)}</span>
          <span class="tag">\${d.itens.length}</span></summary>
+        \${(dados.disciplinas.find(x=>x.id===d.id)?.transcricao
+            ? \`<div class="item \${itemAtual==='d'+d.id?'on':''}" onclick="abrirMd('\${dados.disciplinas.find(x=>x.id===d.id).transcricao}','d\${d.id}')">
+                 <span class="pt done"></span><span class="n">00</span>
+                 <span class="rotulo">Transcrição da disciplina</span><span class="tag">md</span></div>\` : '')}
         \${d.itens.map(i => \`<div class="item \${i.item_id===itemAtual?'on':''}" onclick="abrir(\${i.item_id})">
             <span class="pt done"></span><span class="n">\${dd(i.mod_pos)}.\${dd(i.position)}</span>
             <span class="rotulo" title="\${esc(i.mod_nome)}">\${esc(i.mod_nome)}</span>
@@ -228,9 +243,9 @@ function pintarArvoreEscritos(){
 }
 
 const TRANSC = 'Transcrição.Geral.md';
-async function abrirMd(arquivo){
-  itemAtual = arquivo ? 'tr' : 'ix';
-  if (discAtual === 'escritos') pintarArvoreEscritos();
+async function abrirMd(arquivo, marca){
+  itemAtual = marca ?? (arquivo ? 'tr' : 'ix');
+  if (discAtual === 'escritos') pintarArvoreEscritos(); else pintarArvore();
   const cx = $('#conteudo');
   cx.innerHTML = '<div class="vazio">carregando…</div>';
   const r = await fetch('/md' + (arquivo ? '?p='+encodeURIComponent(arquivo) : ''));
