@@ -72,6 +72,11 @@ const TAREFAS: Record<string, { rotulo: string; dica: string; cmd: string[] }> =
     dica: "Mesmo que o anterior, sem usar a GPU.",
     cmd: ["uv", "run", "python", "-m", "focus.worker", "--no-transcribe"],
   },
+  livros: {
+    rotulo: "Capturar Livros Digitais",
+    dica: "Renderiza o livro interativo e imprime em PDF — o formato que não é arquivo baixável.",
+    cmd: ["bun", "run", "src/cli.ts", "livros"],
+  },
   verify: {
     rotulo: "Conferir integridade",
     dica: "Abre cada arquivo capturado (ffprobe, %PDF) e reenfileira o que não passar.",

@@ -4,6 +4,7 @@ import { connect, destravar, reenfileirar, stats } from "./db.ts";
 import { explorarDisciplina } from "./lesson.ts";
 import { scan } from "./scan.ts";
 import { assistir, pendentes } from "./assistir.ts";
+import { capturarLivros } from "./livro.ts";
 import { comErro, scrape } from "./scrape.ts";
 import { servir } from "./panel.ts";
 import { PANEL_PORT, type Target } from "./config.ts";
@@ -134,6 +135,17 @@ switch (command) {
     break;
   }
 
+  case "livros": {
+    // O "Livro Digital" não é arquivo: é página HTML interativa. Captura-se
+    // renderizando e imprimindo em PDF pelo próprio Chromium.
+    const db = connect();
+    const r = await capturarLivros(db, { aoProgredir: (m) => console.log(m) });
+    console.log(`\n${r.ok}/${r.tentados} livro(s) capturado(s)`);
+    for (const f of r.falhas) console.log(" ⚠", f);
+    db.close();
+    break;
+  }
+
   case "panel": {
     const db = connect();
     destravar(db);
@@ -142,7 +154,7 @@ switch (command) {
   }
 
   default: {
-    console.error("uso: bun run <login|scrape|scan|status|panel|requeue|explore|assistir|faltando>");
+    console.error("uso: bun run <login|scrape|scan|status|panel|requeue|explore|assistir|faltando|livros>");
     console.error("     --enrollment <id>   matrícula (padrão 28859)");
     console.error("     --disciplina <id>   restringe a uma disciplina");
     console.error("     --com-erro          só as disciplinas com item em erro");
