@@ -3,7 +3,7 @@ import { login, type LoginResult } from "./auth.ts";
 import { connect, destravar, reenfileirar, stats } from "./db.ts";
 import { explorarDisciplina } from "./lesson.ts";
 import { scan } from "./scan.ts";
-import { scrape } from "./scrape.ts";
+import { comErro, scrape } from "./scrape.ts";
 import { servir } from "./panel.ts";
 import { PANEL_PORT, type Target } from "./config.ts";
 
@@ -63,7 +63,14 @@ switch (command) {
 
   case "scrape": {
     const db = connect();
-    const apenas = rest.includes("--disciplina") ? [valor("disciplina", 0)] : undefined;
+    const apenas = rest.includes("--disciplina")
+      ? [valor("disciplina", 0)]
+      : flag("com-erro")
+        // Recatalogar só o que falhou é o caso de uso real: renova a URL
+        // assinada do IESDE sem gastar ~40 min refazendo as 9 disciplinas.
+        ? comErro(db)
+        : undefined;
+    if (flag("com-erro")) console.log(`disciplinas com erro: ${apenas!.join(", ") || "nenhuma"}`);
     const r = await scrape(db, MATRICULA, { apenas, continuar: flag("continuar"), aoProgredir: (m) => console.log(m) });
     console.log(`\n${r.disciplinas} disciplina(s), ${r.modulos} módulo(s), ${r.itens} item(ns)`);
     if (r.avisos.length) {
@@ -113,6 +120,8 @@ switch (command) {
     console.error("uso: bun run <login|scrape|scan|status|panel|requeue|explore>");
     console.error("     --enrollment <id>   matrícula (padrão 28859)");
     console.error("     --disciplina <id>   restringe a uma disciplina");
+    console.error("     --com-erro          só as disciplinas com item em erro");
+    console.error("     --continuar         pula as já catalogadas");
     console.error("     --headed            abre o navegador para depurar");
     process.exit(1);
   }

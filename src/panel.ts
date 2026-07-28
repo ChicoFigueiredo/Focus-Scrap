@@ -26,19 +26,68 @@ import { log, reenfileirar, stats } from "./db.ts";
  * painel justamente enquanto há o que mostrar. Cada tarefa escreve no mesmo
  * SQLite, então o progresso aparece na atualização seguinte.
  */
-const TAREFAS: Record<string, { rotulo: string; cmd: string[] }> = {
-  scrape: { rotulo: "Catalogar", cmd: ["bun", "run", "src/cli.ts", "scrape", "--continuar"] },
-  "scrape-tudo": { rotulo: "Recatalogar tudo", cmd: ["bun", "run", "src/cli.ts", "scrape"] },
-  scan: { rotulo: "Reconciliar disco", cmd: ["bun", "run", "src/cli.ts", "scan"] },
-  media: { rotulo: "Baixar e transcrever", cmd: ["uv", "run", "python", "-m", "focus.worker"] },
-  "media-sem-gpu": { rotulo: "Só baixar", cmd: ["uv", "run", "python", "-m", "focus.worker", "--no-transcribe"] },
-  verify: { rotulo: "Conferir integridade", cmd: ["uv", "run", "python", "-m", "focus.verify"] },
+const TAREFAS: Record<string, { rotulo: string; dica: string; cmd: string[] }> = {
+  login: {
+    rotulo: "Login",
+    dica: "Renova a sessão nos dois sistemas. Use quando o catálogo reclamar de sessão expirada.",
+    cmd: ["bun", "run", "src/cli.ts", "login"],
+  },
+  scrape: {
+    rotulo: "Catalogar o que falta",
+    dica: "Só as disciplinas ainda não catalogadas. Não faz nada se todas já estiverem.",
+    cmd: ["bun", "run", "src/cli.ts", "scrape", "--continuar"],
+  },
+  "scrape-erro": {
+    rotulo: "Renovar as com erro",
+    dica: "Recataloga só as disciplinas que têm item em erro — é o que renova URL assinada expirada.",
+    cmd: ["bun", "run", "src/cli.ts", "scrape", "--com-erro"],
+  },
+  "scrape-tudo": {
+    rotulo: "Recatalogar tudo",
+    dica: "As 9 disciplinas do zero. Demorado (~40 min).",
+    cmd: ["bun", "run", "src/cli.ts", "scrape"],
+  },
+  requeue: {
+    rotulo: "Reenfileirar erros",
+    dica: "Devolve para a fila tudo que falhou no download.",
+    cmd: ["bun", "run", "src/cli.ts", "requeue"],
+  },
+  "requeue-transcribe": {
+    rotulo: "Reenfileirar transcrições",
+    dica: "Devolve para a GPU as transcrições que falharam.",
+    cmd: ["bun", "run", "src/cli.ts", "requeue", "--transcribe"],
+  },
+  scan: {
+    rotulo: "Reconciliar disco",
+    dica: "Marca como pronto o que já está no disco. Rode ANTES de baixar.",
+    cmd: ["bun", "run", "src/cli.ts", "scan"],
+  },
+  media: {
+    rotulo: "Baixar e transcrever",
+    dica: "Consome a fila: baixa vídeo e material, e transcreve o que não tem legenda.",
+    cmd: ["uv", "run", "python", "-m", "focus.worker"],
+  },
+  "media-sem-gpu": {
+    rotulo: "Só baixar",
+    dica: "Mesmo que o anterior, sem usar a GPU.",
+    cmd: ["uv", "run", "python", "-m", "focus.worker", "--no-transcribe"],
+  },
+  verify: {
+    rotulo: "Conferir integridade",
+    dica: "Abre cada arquivo capturado (ffprobe, %PDF) e reenfileira o que não passar.",
+    cmd: ["uv", "run", "python", "-m", "focus.verify"],
+  },
 };
+
+/** Quantas linhas de saída guardar por tarefa. */
+const LINHAS_LOG = 200;
 
 interface Execucao {
   desde: number;
   proc: Bun.Subprocess;
-  ultimaLinha: string;
+  /** Saída recente, para o painel mostrar o que está acontecendo de fato. */
+  linhas: string[];
+  resto: string;
 }
 
 const rodando = new Map<string, Execucao>();
@@ -50,30 +99,46 @@ function disparar(db: Database, nome: string): { ok: boolean; msg: string } {
   // arquivo parcial, e dois `scrape` abririam Chromium em dobro.
   if (rodando.has(nome)) return { ok: false, msg: `${t.rotulo} já está rodando` };
 
-  // stderr descartado: um pipe que ninguém lê enche e trava o filho para sempre
-  // — o `uv` e o `yt-dlp` escrevem progresso lá. O stdout é lido logo abaixo.
-  const proc = Bun.spawn(t.cmd, { cwd: BASE_DIR, stdout: "pipe", stderr: "ignore" });
-  const exec: Execucao = { desde: Date.now(), proc, ultimaLinha: "iniciando…" };
+  // stderr redirecionado para o stdout: assim o painel mostra também o erro do
+  // yt-dlp e do Playwright, que é onde a causa costuma estar. Deixar stderr em
+  // "pipe" sem leitor travaria o filho quando o buffer enchesse.
+  const proc = Bun.spawn(t.cmd, { cwd: BASE_DIR, stdout: "pipe", stderr: "pipe" });
+  const exec: Execucao = { desde: Date.now(), proc, linhas: [], resto: "" };
   rodando.set(nome, exec);
-  log(db, "info", "painel", `${t.rotulo}: iniciado`);
+  log(db, "info", "painel", `${t.rotulo}: iniciado — ${t.cmd.join(" ")}`);
 
-  // Lê a saída para alimentar a linha de status; sem isso o pipe enche e o
-  // processo bloqueia na primeira página de stdout.
-  (async () => {
-    const leitor = (proc.stdout as ReadableStream<Uint8Array>).getReader();
+  /** Consome um fluxo linha a linha; um pipe sem leitor trava o processo. */
+  const consumir = async (fluxo: ReadableStream<Uint8Array>, marca: string) => {
+    const leitor = fluxo.getReader();
     const dec = new TextDecoder();
     for (;;) {
       const { done, value } = await leitor.read();
       if (done) break;
-      const linhas = dec.decode(value, { stream: true }).split("\n").filter((l) => l.trim());
-      if (linhas.length) exec.ultimaLinha = linhas.at(-1)!.slice(0, 120);
+      const partes = (exec.resto + dec.decode(value, { stream: true })).split("\n");
+      exec.resto = partes.pop() ?? "";
+      for (const l of partes) {
+        const limpa = l.replace(/\r/g, "").trimEnd();
+        if (!limpa.trim()) continue;
+        exec.linhas.push(marca + limpa.slice(0, 200));
+        if (exec.linhas.length > LINHAS_LOG) exec.linhas.shift();
+      }
     }
-  })().catch(() => undefined);
+  };
+
+  Promise.all([
+    consumir(proc.stdout as ReadableStream<Uint8Array>, ""),
+    consumir(proc.stderr as ReadableStream<Uint8Array>, "! "),
+  ]).catch(() => undefined);
 
   proc.exited.then((code) => {
+    const dur = Math.round((Date.now() - exec.desde) / 1000);
+    // As últimas linhas vão para o histórico de eventos: sem isso o motivo da
+    // falha morre junto com o processo e o painel só mostra "código 1".
+    const fim = exec.linhas.slice(-3).join(" · ").slice(0, 300);
     rodando.delete(nome);
     log(db, code === 0 ? "info" : "error", "painel",
-      `${t.rotulo}: ${code === 0 ? "concluído" : `terminou com código ${code}`}`);
+      `${t.rotulo}: ${code === 0 ? "concluído" : `FALHOU (código ${code})`} em ${dur}s` +
+      (fim ? ` — ${fim}` : ""));
   });
 
   return { ok: true, msg: `${t.rotulo} iniciado` };
@@ -83,10 +148,10 @@ function estadoTarefas() {
   return Object.entries(TAREFAS).map(([nome, t]) => {
     const e = rodando.get(nome);
     return {
-      nome, rotulo: t.rotulo,
+      nome, rotulo: t.rotulo, dica: t.dica,
       rodando: !!e,
       segundos: e ? Math.round((Date.now() - e.desde) / 1000) : 0,
-      ultimaLinha: e?.ultimaLinha ?? "",
+      linhas: e?.linhas.slice(-14) ?? [],
     };
   });
 }
@@ -190,6 +255,9 @@ const PAGINA = `
  button{background:var(--ac);color:#fff;border:0;border-radius:7px;padding:7px 13px;cursor:pointer;font:inherit}
  button.sec{background:transparent;color:var(--txt);border:1px solid var(--linha)}
  button:disabled{opacity:.45;cursor:not-allowed}
+ pre.saida{margin:0;padding:10px 12px;background:var(--bg);border:1px solid var(--linha);border-radius:8px;
+   font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;word-break:break-word;
+   max-height:230px;overflow:auto;color:var(--fraco)}
  .abrir{color:var(--ac);cursor:pointer;text-decoration:none}
  #visor{position:fixed;inset:0;background:#000c;display:none;align-items:center;justify-content:center;padding:24px;z-index:9}
  #visor>div{background:var(--card);border-radius:12px;padding:14px;max-width:min(1000px,95vw);width:100%}
@@ -203,7 +271,7 @@ const PAGINA = `
   <h1>focus-scrap</h1>
   <nav><a id="t-painel" class="on">Painel</a><a id="t-curso">Explorador</a></nav>
   <span style="flex:1"></span>
-  <button class="sec" onclick="req('download')">Reenfileirar erros</button>
+  <span class="fraco" id="resumo" style="font-size:13px"></span>
   <button class="sec" onclick="carregar()">Atualizar</button>
 </header>
 <main><div id="acoes" class="cartao" style="margin-bottom:20px"></div><div id="painel"></div><div id="curso" hidden></div></main>
@@ -220,15 +288,20 @@ async function carregar(){
 }
 function pintarAcoes(){
   const ativa = dados.tarefas.some(t=>t.rodando);
+  const emCurso = dados.tarefas.filter(t=>t.rodando);
   $('#acoes').innerHTML = \`
     <div class="rot" style="margin-bottom:10px">Ações</div>
     <div style="display:flex;gap:8px;flex-wrap:wrap">
       \${dados.tarefas.map(t=>\`<button \${t.rodando||ativa?'disabled':''} onclick="rodar('\${t.nome}')"
+        title="\${esc(t.dica)}"
         class="\${t.nome.startsWith('media')?'':'sec'}">\${t.rodando?'▶ ':''}\${esc(t.rotulo)}\${t.rodando?\` (\${t.segundos}s)\`:''}</button>\`).join('')}
     </div>
-    \${dados.tarefas.filter(t=>t.rodando).map(t=>\`<div class="fraco" style="margin-top:10px;font-size:13px">
-        <b>\${esc(t.rotulo)}</b> — \${esc(t.ultimaLinha)}</div>\`).join('')}
-    \${ativa?'':'<div class="fraco" style="margin-top:10px;font-size:12px">Ordem: Catalogar → Reconciliar disco → Baixar e transcrever. O reconciliar evita rebaixar o que já está no disco.</div>'}\`;
+    \${emCurso.map(t=>\`
+      <div style="margin-top:12px">
+        <div class="rot" style="margin-bottom:6px">\${esc(t.rotulo)} — \${t.segundos}s</div>
+        <pre class="saida">\${t.linhas.map(esc).join('\\n') || 'aguardando saída…'}</pre>
+      </div>\`).join('')}
+    \${ativa?'':'<div class="fraco" style="margin-top:10px;font-size:12px">Passe o mouse num botão para ver o que ele faz. Ordem usual: <b>Catalogar o que falta</b> → <b>Reconciliar disco</b> → <b>Baixar e transcrever</b>. Se houver erro de assinatura expirada: <b>Renovar as com erro</b> → <b>Reenfileirar erros</b> → <b>Baixar e transcrever</b>.</div>'}\`;
 }
 async function rodar(nome){
   const r = await (await fetch('/api/run?tarefa='+nome,{method:'POST'})).json();
@@ -237,6 +310,10 @@ async function rodar(nome){
 }
 function pintarPainel(){
   const s = dados.stats, ev = dados.eventos;
+  const err = s.porStatus.error||0, pend = s.porStatus.pending||0;
+  $('#resumo').textContent = err||pend
+    ? \`\${pend} na fila\${err?\` · \${err} com erro\`:''}\`
+    : 'tudo capturado';
   const done = s.porStatus.done||0, tot = s.itens||0;
   const pct = tot ? Math.round(done/tot*100) : 0;
   $('#painel').innerHTML = \`
@@ -293,7 +370,6 @@ function abrir(id){
 }
 function fechar(){ $('#visor').style.display='none'; $('#visor-c').innerHTML=''; }
 addEventListener('keydown', e => e.key==='Escape' && fechar());
-async function req(qual){ const r = await (await fetch('/api/requeue?qual='+qual,{method:'POST'})).json(); alert(r.n+' item(ns) reenfileirado(s)'); carregar(); }
 $('#t-painel').onclick=()=>{ $('#painel').hidden=false; $('#curso').hidden=true; $('#t-painel').classList.add('on'); $('#t-curso').classList.remove('on'); };
 $('#t-curso').onclick=()=>{ $('#painel').hidden=true; $('#curso').hidden=false; $('#t-curso').classList.add('on'); $('#t-painel').classList.remove('on'); };
 carregar(); setInterval(carregar, 10000);
@@ -314,7 +390,7 @@ export function servir(db: Database, porta: number): void {
           stats: stats(db),
           arvore: arvore(db),
           tarefas: estadoTarefas(),
-          eventos: db.query(`SELECT at, level, source, message FROM events ORDER BY id DESC LIMIT 60`).all(),
+          eventos: db.query(`SELECT at, level, source, message FROM events ORDER BY id DESC LIMIT 120`).all(),
         });
       }
 

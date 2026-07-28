@@ -56,6 +56,22 @@ function jaCatalogadas(db: Database): Set<number> {
   return new Set(rs.map((r) => r.id));
 }
 
+/**
+ * Disciplinas com algum item em erro — base do `--com-erro`.
+ *
+ * É o caso de uso real do "recatalogar": o PDF do IESDE vem por URL assinada de
+ * validade curta, e recatalogar é o que renova a assinatura. Recatalogar as 9
+ * para consertar 7 PDFs custa quase uma hora à toa.
+ */
+export function comErro(db: Database): number[] {
+  return db.query<{ id: number }, []>(`
+    SELECT DISTINCT d.id FROM items i
+      JOIN modules m ON m.id = i.module_id
+      JOIN disciplines d ON d.id = m.discipline_id
+     WHERE i.download_status = 'error'
+  `).all().map((r) => r.id);
+}
+
 export async function scrape(
   db: Database,
   enrollmentId: number,
@@ -65,15 +81,29 @@ export async function scrape(
   const avisos: string[] = [];
   let nModulos = 0, nItens = 0;
 
+  diga(`lendo as disciplinas da matrícula ${enrollmentId}…`);
   let disciplinas = await lerDisciplinas(enrollmentId);
-  if (opts.apenas?.length) disciplinas = disciplinas.filter((d) => opts.apenas!.includes(d.id));
+  diga(`a matrícula tem ${disciplinas.length} disciplina(s)`);
+
+  if (opts.apenas?.length) {
+    disciplinas = disciplinas.filter((d) => opts.apenas!.includes(d.id));
+    diga(`restrito a ${disciplinas.length}: ${disciplinas.map((d) => d.id).join(", ")}`);
+  }
   if (opts.continuar) {
     const prontas = jaCatalogadas(db);
     const antes = disciplinas.length;
     disciplinas = disciplinas.filter((d) => !prontas.has(d.id));
-    if (antes !== disciplinas.length) diga(`pulando ${antes - disciplinas.length} disciplina(s) já catalogada(s)`);
+    diga(`--continuar: ${antes - disciplinas.length} já catalogada(s), ${disciplinas.length} a fazer`);
   }
-  diga(`${disciplinas.length} disciplina(s) a catalogar`);
+
+  if (!disciplinas.length) {
+    // Sem isto o comando "concluía" em silêncio e parecia quebrado — foi o que
+    // aconteceu com o botão Catalogar depois que tudo já estava catalogado.
+    diga("nada a catalogar. Para renovar assinaturas expiradas use --com-erro; " +
+         "para refazer tudo, rode sem --continuar.");
+    return { disciplinas: 0, modulos: 0, itens: 0, avisos: [] };
+  }
+  diga(`catalogando ${disciplinas.length} disciplina(s)…`);
 
   for (const d of disciplinas) {
     // Cada disciplina é isolada: navegar o accordion abre um Chromium por vez e

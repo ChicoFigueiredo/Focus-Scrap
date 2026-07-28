@@ -158,6 +158,13 @@ export function upsertModule(
 /**
  * Insere ou atualiza um item SEM rebaixar progresso: se já está `done`, uma
  * recatalogação não pode devolvê-lo para a fila.
+ *
+ * E, pelo mesmo motivo, **não sobrescreve o `rel_path` de item já baixado.** O
+ * caminho de um item `done` foi conferido contra o disco pelo `scan` e aponta
+ * para o arquivo real, que muitas vezes tem grafia diferente da que geramos
+ * (o acervo é anterior a este projeto). Deixar a recatalogação regravar o nome
+ * gerado fazia 46 arquivos existentes serem dados como sumidos na conferência
+ * seguinte — e reenfileirados para baixar de novo.
  */
 export function upsertItem(
   db: Database,
@@ -173,7 +180,8 @@ export function upsertItem(
        title=excluded.title,
        source_url=excluded.source_url,
        subtitle_url=COALESCE(excluded.subtitle_url, items.subtitle_url),
-       rel_path=COALESCE(excluded.rel_path, items.rel_path),
+       rel_path=CASE WHEN items.download_status='done' THEN items.rel_path
+                     ELSE COALESCE(excluded.rel_path, items.rel_path) END,
        updated_at=datetime('now')`,
     [it.module_id, it.kind, it.position, it.title, it.source_url,
      it.subtitle_url ?? null, it.rel_path ?? null],
