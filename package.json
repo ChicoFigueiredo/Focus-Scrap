@@ -16,6 +16,7 @@
     "media:no-gpu": "uv run python -m focus.worker --no-transcribe",
     "verify": "uv run python -m focus.verify",
     "livros": "bun run src/cli.ts livros",
+    "escritos": "bun run src/cli.ts escritos",
     "assistir": "bun run src/cli.ts assistir",
     "faltando": "bun run src/cli.ts faltando",
     "setup": "bun install && bun run setup:browser && bun run setup:py",

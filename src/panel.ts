@@ -13,9 +13,10 @@
  */
 import type { Database } from "bun:sqlite";
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 
-import { BASE_DIR, PANEL_HOST, REPOSITORY } from "./config.ts";
+import { BASE_DIR, CURSO_PASTA, PANEL_HOST, REPOSITORY } from "./config.ts";
+import { ARQ_INDICE, ARQ_TRANSCRICAO, PASTA as PASTA_ESCRITOS } from "./escritos.ts";
 import { lerTrechos, srtParaVtt } from "./legenda.ts";
 import { PAGINA } from "./panel-ui.ts";
 import { log, reenfileirar, stats } from "./db.ts";
@@ -78,6 +79,11 @@ const TAREFAS: Record<string, { rotulo: string; dica: string; cmd: string[] }> =
     rotulo: "Capturar Livros Digitais",
     dica: "Renderiza o livro interativo e imprime em PDF — o formato que não é arquivo baixável.",
     cmd: ["bun", "run", "src/cli.ts", "livros"],
+  },
+  escritos: {
+    rotulo: "Gerar Materiais Escritos",
+    dica: "Monta 00-Materiais Escritos: índice dos PDFs + transcrição de todas as aulas em texto corrido.",
+    cmd: ["bun", "run", "src/cli.ts", "escritos"],
   },
   verify: {
     rotulo: "Conferir integridade",
@@ -263,6 +269,54 @@ function caminhoLegenda(relPath: string): string | null {
   return null;
 }
 
+/**
+ * Markdown → HTML, subconjunto pequeno de propósito.
+ *
+ * O único markdown servido aqui é o que nós mesmos geramos em `escritos.ts`:
+ * três níveis de título, links, negrito, lista e régua. Uma biblioteca completa
+ * seria dependência nova para converter texto que já sabemos o formato.
+ */
+export function mdParaHtml(md: string): string {
+  const esc = (t: string) =>
+    t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+  const inline = (t: string) =>
+    esc(t)
+      .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_m, txt, href) => {
+        // Link relativo aponta para arquivo do acervo; o painel serve por /arquivo.
+        const externo = /^https?:/i.test(href);
+        const alvo = externo ? href : `/md?p=${encodeURIComponent(href)}`;
+        return `<a href="${alvo}"${externo ? ' target="_blank" rel="noreferrer"' : ""}>${txt}</a>`;
+      })
+      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+      .replace(/_([^_]+)_/g, "<em>$1</em>")
+      .replace(/`([^`]+)`/g, "<code>$1</code>");
+
+  const saida: string[] = [];
+  let emLista = false;
+  const fecharLista = () => { if (emLista) { saida.push("</ul>"); emLista = false; } };
+
+  for (const linha of md.replace(/\r/g, "").split("\n")) {
+    const l = linha.trimEnd();
+    const t = /^(#{1,6})\s+(.*)$/.exec(l);
+    if (t) { fecharLista(); const n = t[1]!.length; saida.push(`<h${n}>${inline(t[2]!)}</h${n}>`); continue; }
+    if (/^---+$/.test(l)) { fecharLista(); saida.push("<hr>"); continue; }
+    const li = /^[-*]\s+(.*)$/.exec(l);
+    if (li) { if (!emLista) { saida.push("<ul>"); emLista = true; } saida.push(`<li>${inline(li[1]!)}</li>`); continue; }
+    if (!l.trim()) { fecharLista(); continue; }
+    fecharLista();
+    saida.push(`<p>${inline(l)}</p>`);
+  }
+  fecharLista();
+  return saida.join("\n");
+}
+
+/** Resolve um caminho pedido pelo painel dentro do acervo, sem deixar escapar. */
+function dentroDoAcervo(rel: string): string | null {
+  const alvo = join(REPOSITORY, decodeURIComponent(rel));
+  return alvo.startsWith(REPOSITORY) && existsSync(alvo) ? alvo : null;
+}
+
 export function servir(db: Database, porta: number): void {
   const servidor = Bun.serve({
     hostname: PANEL_HOST,
@@ -294,6 +348,24 @@ export function servir(db: Database, porta: number): void {
 
       // Legenda como WebVTT: o <track> do navegador NÃO lê SRT, e sem a
       // conversão a faixa carrega sem erro e simplesmente não aparece.
+      // Markdown do acervo renderizado, e qualquer outro arquivo servido cru.
+      // Os links relativos do índice chegam aqui, então "abrir o PDF do módulo"
+      // funciona no painel sem duplicar caminho no banco.
+      if (rota === "/md") {
+        const pedido = url.searchParams.get("p")
+          ?? join(CURSO_PASTA, PASTA_ESCRITOS, ARQ_INDICE);
+        const base = join(CURSO_PASTA, PASTA_ESCRITOS);
+        const rel = pedido.startsWith("..") ? join(base, pedido) : (
+          pedido.includes("/") ? pedido : join(base, pedido));
+        const alvo = dentroDoAcervo(rel);
+        if (!alvo) return new Response("não encontrado", { status: 404 });
+        if (!/\.md$/i.test(alvo)) return servirArquivo(relative(REPOSITORY, alvo), req);
+        return Response.json({
+          html: mdParaHtml(readFileSync(alvo, "utf-8")),
+          nome: alvo.split("/").pop(),
+        });
+      }
+
       if (rota.startsWith("/legenda/")) {
         const id = Number(rota.slice("/legenda/".length));
         const r = db.query<{ rel_path: string | null }, [number]>(

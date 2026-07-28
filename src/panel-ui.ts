@@ -83,6 +83,17 @@ export const PAGINA = `
  .fala.on{background:var(--realce);box-shadow:inset 3px 0 0 var(--ac)}
  .fala time{color:var(--fraco);font-variant-numeric:tabular-nums;font-size:12px;flex-shrink:0;min-width:46px}
  .corrido{padding:14px;white-space:pre-wrap;line-height:1.75}
+ .md{max-width:78ch;line-height:1.75}
+ .md h1{font-size:22px;margin:26px 0 10px;font-weight:680;letter-spacing:-.01em}
+ .md h2{font-size:17px;margin:24px 0 8px;font-weight:650;color:var(--ac)}
+ .md h3{font-size:14.5px;margin:20px 0 6px;font-weight:650;color:var(--fraco);
+   text-transform:none;letter-spacing:0}
+ .md p{margin:0 0 14px}
+ .md ul{margin:0 0 14px;padding-left:20px}
+ .md li{margin:4px 0}
+ .md hr{border:0;border-top:1px solid var(--linha);margin:22px 0}
+ .md a{color:var(--ac)}
+ .md code{background:var(--card);padding:1px 5px;border-radius:5px;font-size:12.5px}
 
  pre.saida{margin:0;padding:10px 12px;background:var(--bg);border:1px solid var(--linha);
    border-radius:8px;font:12px/1.5 ui-monospace,Menlo,monospace;white-space:pre-wrap;
@@ -138,13 +149,27 @@ async function carregar(){
 function disc(){ return dados.disciplinas.find(d => d.id === discAtual); }
 
 function pintarCombo(){
-  $('#combo').innerHTML = dados.disciplinas.map(d =>
-    \`<option value="\${d.id}" \${d.id===discAtual?'selected':''}>\${dd(d.posicao)}. \${esc(d.nome)} — \${d.ok}/\${d.itens}</option>\`).join('');
+  // A entrada dos escritos vem primeiro, como a pasta 00- no disco.
+  $('#combo').innerHTML =
+    \`<option value="escritos" \${discAtual==='escritos'?'selected':''}>00 — Materiais Escritos</option>\`
+    + dados.disciplinas.map(d =>
+      \`<option value="\${d.id}" \${d.id===discAtual?'selected':''}>\${dd(d.posicao)}. \${esc(d.nome)} — \${d.ok}/\${d.itens}</option>\`).join('');
 }
-function escolher(id){ discAtual = Number(id); itemAtual = null;
+function escolher(id){ discAtual = id === 'escritos' ? 'escritos' : Number(id); itemAtual = null;
+  if (discAtual === 'escritos'){ pintarMetricas(); pintarArvore(); abrirMd(); return; }
   pintarMetricas(); pintarArvore(); $('#conteudo').innerHTML = '<div class="vazio">Escolha uma aula na árvore à esquerda.</div>'; }
 
 function pintarMetricas(){
+  if (discAtual === 'escritos'){
+    const ds = dados.disciplinas;
+    const soma = k => ds.reduce((s,d)=>s+(d[k]||0),0);
+    const cartao = (rot,num) => \`<div class="m"><div class="rot">\${rot}</div><div class="num">\${num}</div></div>\`;
+    $('#metricas').innerHTML =
+      cartao('Disciplinas', ds.length) + cartao('Aulas transcritas', soma('transcritos')) +
+      cartao('Materiais', dados.arvore.filter(r=>r.item_id&&r.kind!=='video').length) +
+      cartao('Horas de vídeo', relogio(soma('duracao'))) + cartao('No disco', mb(soma('bytes')));
+    return;
+  }
   const d = disc(); if(!d) return;
   const pct = d.itens ? Math.round(d.ok/d.itens*100) : 0;
   const cartao = (rot,num,extra='') => \`<div class="m"><div class="rot">\${rot}</div><div class="num">\${num}</div>\${extra}</div>\`;
@@ -159,6 +184,7 @@ function pintarMetricas(){
 }
 
 function pintarArvore(){
+  if (discAtual === 'escritos') return pintarArvoreEscritos();
   const linhas = dados.arvore.filter(r => r.disc_id === discAtual && r.item_id != null);
   const mods = new Map();
   for (const r of linhas){
@@ -177,6 +203,47 @@ function pintarArvore(){
         </div>\`).join('')}
     </details>\`;
   }).join('') || '<div class="vazio" style="padding:30px">Nada catalogado nesta disciplina.</div>';
+}
+
+function pintarArvoreEscritos(){
+  const mats = dados.arvore.filter(r => r.item_id != null && r.kind !== 'video' && r.download_status === 'done');
+  const porDisc = new Map();
+  for (const r of mats){
+    if(!porDisc.has(r.disc_id)) porDisc.set(r.disc_id, {nome:r.disc_nome, pos:r.disc_pos, itens:[]});
+    porDisc.get(r.disc_id).itens.push(r);
+  }
+  $('#arvore').innerHTML =
+    \`<div class="item \${itemAtual==='ix'?'on':''}" onclick="abrirMd()">
+        <span class="pt done"></span><span class="rotulo">Índice dos escritos</span><span class="tag">md</span></div>
+     <div class="item \${itemAtual==='tr'?'on':''}" onclick="abrirMd('\${TRANSC}')">
+        <span class="pt done"></span><span class="rotulo">Transcrição Geral</span><span class="tag">md</span></div>\`
+    + [...porDisc.values()].sort((a,b)=>a.pos-b.pos).map(d =>
+      \`<details class="mod" open><summary><span>\${dd(d.pos)} — \${esc(d.nome)}</span>
+         <span class="tag">\${d.itens.length}</span></summary>
+        \${d.itens.map(i => \`<div class="item \${i.item_id===itemAtual?'on':''}" onclick="abrir(\${i.item_id})">
+            <span class="pt done"></span><span class="n">\${dd(i.mod_pos)}.\${dd(i.position)}</span>
+            <span class="rotulo" title="\${esc(i.mod_nome)}">\${esc(i.mod_nome)}</span>
+            <span class="tag">\${i.kind}</span></div>\`).join('')}
+      </details>\`).join('');
+}
+
+const TRANSC = 'Transcrição.Geral.md';
+async function abrirMd(arquivo){
+  itemAtual = arquivo ? 'tr' : 'ix';
+  if (discAtual === 'escritos') pintarArvoreEscritos();
+  const cx = $('#conteudo');
+  cx.innerHTML = '<div class="vazio">carregando…</div>';
+  const r = await fetch('/md' + (arquivo ? '?p='+encodeURIComponent(arquivo) : ''));
+  if (!r.ok){ cx.innerHTML = '<div class="vazio">Ainda não gerado. Use <b>Gerar Materiais Escritos</b> nas Ações.</div>'; return; }
+  const j = await r.json();
+  cx.innerHTML = '<div class="md">'+j.html+'</div>';
+  cx.scrollTop = 0;
+  // Link para PDF abre no painel; link para outro .md navega sem sair da página.
+  cx.querySelectorAll('a[href^="/md?p="]').forEach(a => {
+    const alvo = decodeURIComponent(a.getAttribute('href').slice('/md?p='.length));
+    if (/\\.md$/i.test(alvo)) a.onclick = e => { e.preventDefault(); abrirMd(alvo); };
+    else a.setAttribute('target','_blank');
+  });
 }
 
 async function abrir(id){
