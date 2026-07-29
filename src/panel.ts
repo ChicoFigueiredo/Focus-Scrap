@@ -334,7 +334,39 @@ function dentroDoAcervo(rel: string): string | null {
   return alvo.startsWith(REPOSITORY) && existsSync(alvo) ? alvo : null;
 }
 
+/**
+ * Traduz falha de bind em instrução, não em stack trace.
+ *
+ * Porta ocupada é o erro mais provável aqui — quase sempre um painel anterior
+ * que ficou vivo. O `EADDRINUSE` cru manda o leitor para dentro do Bun.serve,
+ * que é o único lugar onde a resposta não está.
+ */
+function explicarFalhaDeRede(e: unknown, porta: number): never {
+  const cod = (e as { code?: string })?.code;
+  if (cod === "EADDRINUSE") {
+    console.error(`\nA porta ${porta} já está em uso — provavelmente outro painel rodando.\n`);
+    console.error("  ver quem está:  ss -lptn 'sport = :" + porta + "'");
+    console.error("  encerrar     :  pkill -f 'src/cli.ts panel'");
+    console.error(`  ou usar outra:  FOCUS_PANEL_PORT=${porta + 1} bun run panel\n`);
+    process.exit(1);
+  }
+  if (cod === "EACCES") {
+    console.error(`\nSem permissão para abrir a porta ${porta}.`);
+    console.error(`Abaixo de 1024 exige root; use FOCUS_PANEL_PORT=7788.\n`);
+    process.exit(1);
+  }
+  throw e;
+}
+
 export function servir(db: Database, porta: number): void {
+  try {
+    return iniciar(db, porta);
+  } catch (e) {
+    explicarFalhaDeRede(e, porta);
+  }
+}
+
+function iniciar(db: Database, porta: number): void {
   const servidor = Bun.serve({
     hostname: PANEL_HOST,
     port: porta,
