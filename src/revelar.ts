@@ -84,6 +84,37 @@ export async function revelar(alvo: string): Promise<Revelado> {
   return { ok: false, msg: "nenhum gerenciador de arquivos disponível", caminho: alvo };
 }
 
+/**
+ * Abre o alvo no programa padrão do sistema — o equivalente ao `start` do
+ * PowerShell, ou ao duplo clique.
+ *
+ * No WSL isso funciona porque o binfmt_misc (`WSLInterop`) deixa executar
+ * qualquer `.exe` do Windows direto do Linux. Três caminhos servem:
+ *
+ *   explorer.exe <caminho>                  usado aqui
+ *   cmd.exe /c start "" <caminho>           o `start` literal
+ *   powershell.exe -c Start-Process <cam>   idem
+ *
+ * Escolhi o `explorer.exe` por ser o mesmo binário do "mostrar na pasta" e por
+ * não reclamar de caminho UNC — o `cmd.exe` avisa que o diretório atual é
+ * `\\wsl.localhost\…` toda vez. Em compensação ele SEMPRE devolve 1, então o
+ * código de saída não diz nada sobre ter dado certo.
+ */
+export async function abrirNoSistema(alvo: string): Promise<Revelado> {
+  if (!alvo.startsWith(REPOSITORY)) return { ok: false, msg: "fora do acervo" };
+  if (!existsSync(alvo)) return { ok: false, msg: "arquivo não está no disco" };
+
+  if (noWsl()) {
+    const win = await paraWindows(alvo);
+    if (!win) return { ok: false, msg: "wslpath não converteu o caminho" };
+    await rodar(["explorer.exe", win]);
+    return { ok: true, msg: "aberto no programa padrão do Windows", caminho: win };
+  }
+  if (Bun.which("xdg-open") && (await rodar(["xdg-open", alvo])) === 0)
+    return { ok: true, msg: "aberto", caminho: alvo };
+  return { ok: false, msg: "não há como abrir neste sistema", caminho: alvo };
+}
+
 /** Caminho absoluto de um item, a partir do `rel_path` do banco. */
 export function caminhoDoItem(relPath: string): string {
   return join(REPOSITORY, relPath);

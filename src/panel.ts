@@ -18,7 +18,7 @@ import { join, relative } from "node:path";
 import { BASE_DIR, CURSO_PASTA, PANEL_HOST, REPOSITORY } from "./config.ts";
 import { ARQ_INDICE, ARQ_TRANSCRICAO, PASTA as PASTA_ESCRITOS, arqDisciplina } from "./escritos.ts";
 import { lerTrechos, srtParaVtt } from "./legenda.ts";
-import { caminhoDoItem, caminhoLegivel, revelar } from "./revelar.ts";
+import { abrirNoSistema, caminhoDoItem, caminhoLegivel, revelar } from "./revelar.ts";
 import { PAGINA } from "./panel-ui.ts";
 import { log, reenfileirar, stats } from "./db.ts";
 
@@ -318,6 +318,16 @@ export function mdParaHtml(md: string): string {
   return saida.join("\n");
 }
 
+/**
+ * Traduz o `p` que a página usa nos materiais escritos em caminho relativo ao
+ * acervo. Os links do índice são relativos à pasta 00-…, então "../01-Disc/x.pdf"
+ * precisa ser resolvido a partir dela.
+ */
+function resolverEscrito(pedido: string): string {
+  const base = join(CURSO_PASTA, PASTA_ESCRITOS);
+  return pedido.startsWith("..") || !pedido.includes("/") ? join(base, pedido) : pedido;
+}
+
 /** Resolve um caminho pedido pelo painel dentro do acervo, sem deixar escapar. */
 function dentroDoAcervo(rel: string): string | null {
   const alvo = join(REPOSITORY, decodeURIComponent(rel));
@@ -344,23 +354,36 @@ export function servir(db: Database, porta: number): void {
         });
       }
 
-      // "Mostrar na pasta": o caminho NUNCA vem da requisição — chega o id e o
-      // caminho sai do banco, senão uma URL forjada abriria qualquer arquivo.
+      // Alvo de "mostrar na pasta" / "abrir" / "copiar caminho".
+      //
+      // Por `id`, o caminho sai do BANCO — nunca da requisição —, que é o que
+      // impede uma URL forjada de virar "abra qualquer arquivo da máquina".
+      // Por `p` (usado pelos materiais escritos, que são arquivos e não itens
+      // do banco) o caminho é resolvido e conferido contra a raiz do acervo.
+      const alvoDaRequisicao = (): string | null => {
+        const id = url.searchParams.get("id");
+        if (id) {
+          const r = db.query<{ rel_path: string | null }, [number]>(
+            `SELECT rel_path FROM items WHERE id=?`).get(Number(id));
+          return r?.rel_path ? caminhoDoItem(r.rel_path) : null;
+        }
+        const p = url.searchParams.get("p");
+        return p ? dentroDoAcervo(resolverEscrito(p)) : null;
+      };
+
       if (rota === "/api/revelar" && req.method === "POST") {
-        const id = Number(url.searchParams.get("id"));
-        const r = db.query<{ rel_path: string | null }, [number]>(
-          `SELECT rel_path FROM items WHERE id=?`).get(id);
-        if (!r?.rel_path) return Response.json({ ok: false, msg: "item sem arquivo" });
-        return Response.json(await revelar(caminhoDoItem(r.rel_path)));
+        const alvo = alvoDaRequisicao();
+        return Response.json(alvo ? await revelar(alvo) : { ok: false, msg: "arquivo não encontrado" });
       }
 
-      // Caminho do item no formato do sistema, para exibir e copiar.
+      if (rota === "/api/abrir" && req.method === "POST") {
+        const alvo = alvoDaRequisicao();
+        return Response.json(alvo ? await abrirNoSistema(alvo) : { ok: false, msg: "arquivo não encontrado" });
+      }
+
       if (rota === "/api/caminho") {
-        const id = Number(url.searchParams.get("id"));
-        const r = db.query<{ rel_path: string | null }, [number]>(
-          `SELECT rel_path FROM items WHERE id=?`).get(id);
-        if (!r?.rel_path) return Response.json({ caminho: null });
-        return Response.json({ caminho: await caminhoLegivel(caminhoDoItem(r.rel_path)) });
+        const alvo = alvoDaRequisicao();
+        return Response.json({ caminho: alvo ? await caminhoLegivel(alvo) : null });
       }
 
       if (rota === "/api/run" && req.method === "POST") {
@@ -380,10 +403,7 @@ export function servir(db: Database, porta: number): void {
       if (rota === "/md") {
         const pedido = url.searchParams.get("p")
           ?? join(CURSO_PASTA, PASTA_ESCRITOS, ARQ_INDICE);
-        const base = join(CURSO_PASTA, PASTA_ESCRITOS);
-        const rel = pedido.startsWith("..") ? join(base, pedido) : (
-          pedido.includes("/") ? pedido : join(base, pedido));
-        const alvo = dentroDoAcervo(rel);
+        const alvo = dentroDoAcervo(resolverEscrito(pedido));
         if (!alvo) return new Response("não encontrado", { status: 404 });
         if (!/\.md$/i.test(alvo)) return servirArquivo(relative(REPOSITORY, alvo), req);
         return Response.json({

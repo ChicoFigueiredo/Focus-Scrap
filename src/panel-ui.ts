@@ -256,8 +256,10 @@ async function abrirMd(arquivo, marca){
   const r = await fetch('/md' + (arquivo ? '?p='+encodeURIComponent(arquivo) : ''));
   if (!r.ok){ cx.innerHTML = '<div class="vazio">Ainda não gerado. Use <b>Gerar Materiais Escritos</b> nas Ações.</div>'; return; }
   const j = await r.json();
-  cx.innerHTML = '<div class="md">'+j.html+'</div>';
+  const alvo = arquivo ?? '00-Materiais.Escritos.md';
+  cx.innerHTML = barraArquivo({p: alvo}) + '<div class="md">'+j.html+'</div>';
   cx.scrollTop = 0;
+  carregarCaminho({p: alvo});
   // Link para PDF abre no painel; link para outro .md navega sem sair da página.
   cx.querySelectorAll('a[href^="/md?p="]').forEach(a => {
     const alvo = decodeURIComponent(a.getAttribute('href').slice('/md?p='.length));
@@ -271,21 +273,29 @@ async function abrirMd(arquivo, marca){
  * o Explorer com ele selecionado e botão para copiar o caminho. O navegador não
  * consegue revelar arquivo sozinho — quem faz é o servidor local.
  */
-function barraArquivo(id){
+function barraArquivo(alvo){
+  // alvo é {id} para item do banco ou {p} para material escrito (arquivo solto).
+  const q = alvo.id != null ? 'id='+alvo.id : 'p='+encodeURIComponent(alvo.p);
   return \`<div class="arquivo">
       <code id="cam" title="carregando…">carregando caminho…</code>
-      <button class="sec mini" onclick="revelar(\${id})">Mostrar na pasta</button>
+      <button class="sec mini" onclick="abrirNoSistema('\${q}')">Abrir</button>
+      <button class="sec mini" onclick="revelar('\${q}')">Mostrar na pasta</button>
       <button class="sec mini" onclick="copiarCaminho(this)">Copiar caminho</button>
     </div>\`;
 }
-async function carregarCaminho(id){
-  const j = await (await fetch('/api/caminho?id='+id)).json();
+async function carregarCaminho(alvo){
+  const q = alvo.id != null ? 'id='+alvo.id : 'p='+encodeURIComponent(alvo.p);
+  const j = await (await fetch('/api/caminho?'+q)).json();
   const el = $('#cam'); if(!el) return;
   el.textContent = j.caminho ?? '(sem arquivo)';
   el.title = j.caminho ?? '';
 }
-async function revelar(id){
-  const r = await (await fetch('/api/revelar?id='+id,{method:'POST'})).json();
+async function revelar(q){
+  const r = await (await fetch('/api/revelar?'+q,{method:'POST'})).json();
+  if(!r.ok) alert('Não consegui abrir: '+r.msg);
+}
+async function abrirNoSistema(q){
+  const r = await (await fetch('/api/abrir?'+q,{method:'POST'})).json();
   if(!r.ok) alert('Não consegui abrir: '+r.msg);
 }
 async function copiarCaminho(botao){
@@ -317,9 +327,9 @@ async function abrir(id){
   if (r.kind !== 'video'){
     $('#conteudo').innerHTML = \`<h2 class="tit">\${esc(r.title)}</h2>
       <div class="meta"><span>\${esc(r.kind)}</span><span>\${mb(r.bytes)}</span></div>
-      \${barraArquivo(id)}
+      \${barraArquivo({id})}
       <iframe class="doc" src="/media/\${id}"></iframe>\`;
-    carregarCaminho(id);
+    carregarCaminho({id});
     return;
   }
 
@@ -336,14 +346,14 @@ async function abrir(id){
       \${r.duration?\`<span>\${relogio(r.duration)}</span>\`:''}
       <span>transcrição: \${r.transcribe_status}</span>
     </div>
-    \${barraArquivo(id)}
+    \${barraArquivo({id})}
     <div class="transc">
       <header><h3>Transcrição</h3>
         <span class="tag" id="dica">clique numa fala para pular o vídeo</span></header>
       <div class="falas" id="falas">carregando…</div>
     </div>\`;
 
-  carregarCaminho(id);
+  carregarCaminho({id});
   vid = $('#v');
   // A faixa precisa ser ligada no JS: o atributo default sozinho nem sempre
   // exibe a legenda. (Sem crases neste arquivo: encerram o template literal.)
