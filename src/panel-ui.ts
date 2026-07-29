@@ -399,6 +399,10 @@ function pintarAcoes(){
     + dados.tarefas.filter(t=>t.rodando).map(t =>
       \`<div style="margin-top:10px"><div class="tag">\${esc(t.rotulo)} — \${t.segundos}s</div>
        <pre class="saida">\${t.linhas.map(esc).join('\\n')||'aguardando saída…'}</pre></div>\`).join('')
+    + (dados.sistema?.length
+        ? \`<div class="tag" style="margin-top:12px">Comandos no sistema</div>
+           <pre class="saida">\${dados.sistema.map(c =>
+             esc(\`\${c.cmd}\n  código=\${c.codigo}\${c.erro?' erro='+c.erro:''}\${c.saida?' saída='+c.saida:''}\`)).join('\\n')}</pre>\` : '')
     + \`<ul class="ev">\${dados.eventos.slice(0,14).map(e =>
       \`<li><span class="tag">\${e.at}</span> <b class="\${e.level==='error'?'erro':''}">\${esc(e.source)}</b> \${esc(e.message)}</li>\`).join('')}</ul>\`;
 }

@@ -27,21 +27,61 @@ export interface Revelado {
   caminho?: string;
 }
 
-/** Roda um comando e devolve o código; não lança. */
-async function rodar(cmd: string[]): Promise<number> {
+export interface Execucao {
+  cmd: string;
+  codigo: number;
+  saida: string;
+  erro: string;
+}
+
+/** Onde o painel registra o que tentou — alimentado a cada chamada. */
+export const diario: Execucao[] = [];
+
+/**
+ * Roda um comando e REGISTRA tudo: linha executada, código, stdout e stderr.
+ *
+ * A versão anterior descartava as três coisas (`ignore` nos fluxos, `catch`
+ * vazio) e devolvia só um número. Quando o Explorer não abria, não havia nada
+ * para olhar — nem o comando, nem a reclamação do Windows.
+ */
+async function rodar(cmd: string[], opts: { cwd?: string } = {}): Promise<Execucao> {
+  const linha = cmd.join(" ");
   try {
-    const p = Bun.spawn(cmd, { stdout: "ignore", stderr: "ignore", stdin: "ignore" });
-    return await p.exited;
-  } catch {
-    return -1;
+    const p = Bun.spawn(cmd, { stdout: "pipe", stderr: "pipe", stdin: "ignore", ...opts });
+    const [saida, erro] = await Promise.all([
+      new Response(p.stdout).text(),
+      new Response(p.stderr).text(),
+    ]);
+    const r: Execucao = {
+      cmd: linha, codigo: await p.exited,
+      saida: saida.trim().slice(0, 400), erro: erro.trim().slice(0, 400),
+    };
+    console.log(`[revelar] ${linha}`);
+    console.log(`[revelar]   código=${r.codigo}` +
+      (r.saida ? ` saída="${r.saida}"` : "") + (r.erro ? ` erro="${r.erro}"` : ""));
+    diario.unshift(r);
+    diario.length = Math.min(diario.length, 20);
+    return r;
+  } catch (e) {
+    const r: Execucao = { cmd: linha, codigo: -1, saida: "", erro: String(e).slice(0, 400) };
+    console.error(`[revelar] FALHOU ao executar: ${linha}\n[revelar]   ${r.erro}`);
+    diario.unshift(r);
+    return r;
   }
 }
 
 async function paraWindows(caminho: string): Promise<string | null> {
-  const p = Bun.spawn(["wslpath", "-w", caminho], { stdout: "pipe", stderr: "ignore" });
-  const saida = (await new Response(p.stdout).text()).trim();
+  const p = Bun.spawn(["wslpath", "-w", caminho], { stdout: "pipe", stderr: "pipe" });
+  const [saida, erro] = await Promise.all([
+    new Response(p.stdout).text(), new Response(p.stderr).text(),
+  ]);
   await p.exited;
-  return p.exitCode === 0 && saida ? saida : null;
+  if (p.exitCode !== 0 || !saida.trim()) {
+    console.error(`[revelar] wslpath -w falhou (${p.exitCode}): ${erro.trim() || "sem saída"}`);
+    return null;
+  }
+  console.log(`[revelar] wslpath: ${caminho}\n[revelar]        → ${saida.trim()}`);
+  return saida.trim();
 }
 
 /** Estamos num WSL? O acervo aqui mora num disco Windows montado. */
@@ -60,11 +100,23 @@ export async function revelar(alvo: string): Promise<Revelado> {
   if (noWsl()) {
     const win = await paraWindows(alvo);
     if (!win) return { ok: false, msg: "wslpath não converteu o caminho" };
-    // `/select,` precisa vir COLADO no caminho — com espaço o Explorer abre a
-    // pasta errada. E o explorer.exe devolve 1 mesmo quando funciona, então o
-    // código de saída não serve para decidir sucesso.
-    await rodar(["explorer.exe", `/select,${win}`]);
-    return { ok: true, msg: "Explorer aberto", caminho: win };
+    // NÃO chamar `explorer.exe /select,…` direto: o interop do WSL trata
+    // argumento começando com "/" como caminho POSIX e o mangla, então o
+    // comando sai sem erro, com código 1 (o normal do explorer) e SEM abrir
+    // janela nenhuma. Medido: 11 janelas antes, 11 depois.
+    //
+    // Passando por `cmd.exe /c`, quem interpreta o `/select,` é o Windows, e
+    // aí funciona. O `/select,` precisa vir COLADO no caminho — com espaço o
+    // Explorer abre a pasta errada. O `cwd` em /mnt/c existe para o cmd não
+    // avisar que o diretório atual é `\\wsl.localhost\…` a cada chamada. E o
+    // explorer devolve 1 mesmo dando certo, então só stderr acusa problema.
+    const r = await rodar(
+      ["cmd.exe", "/c", `explorer.exe /select,"${win}"`],
+      { cwd: "/mnt/c" },
+    );
+    return r.erro
+      ? { ok: false, msg: `cmd.exe reclamou: ${r.erro}`, caminho: win }
+      : { ok: true, msg: "Explorer aberto", caminho: win };
   }
 
   // Fora do WSL: tenta os gerenciadores que sabem selecionar o arquivo, e
@@ -75,10 +127,10 @@ export async function revelar(alvo: string): Promise<Revelado> {
     ["nemo", alvo],
     ["thunar", alvo],
   ]) {
-    if (Bun.which(cmd[0]!) && (await rodar(cmd)) === 0)
+    if (Bun.which(cmd[0]!) && (await rodar(cmd)).codigo === 0)
       return { ok: true, msg: `${cmd[0]} aberto`, caminho: alvo };
   }
-  if (Bun.which("xdg-open") && (await rodar(["xdg-open", dirname(alvo)])) === 0)
+  if (Bun.which("xdg-open") && (await rodar(["xdg-open", dirname(alvo)])).codigo === 0)
     return { ok: true, msg: "pasta aberta", caminho: alvo };
 
   return { ok: false, msg: "nenhum gerenciador de arquivos disponível", caminho: alvo };
@@ -107,10 +159,12 @@ export async function abrirNoSistema(alvo: string): Promise<Revelado> {
   if (noWsl()) {
     const win = await paraWindows(alvo);
     if (!win) return { ok: false, msg: "wslpath não converteu o caminho" };
-    await rodar(["explorer.exe", win]);
-    return { ok: true, msg: "aberto no programa padrão do Windows", caminho: win };
+    const r = await rodar(["explorer.exe", win]);
+    return r.erro
+      ? { ok: false, msg: `explorer.exe reclamou: ${r.erro}`, caminho: win }
+      : { ok: true, msg: "aberto no programa padrão do Windows", caminho: win };
   }
-  if (Bun.which("xdg-open") && (await rodar(["xdg-open", alvo])) === 0)
+  if (Bun.which("xdg-open") && (await rodar(["xdg-open", alvo])).codigo === 0)
     return { ok: true, msg: "aberto", caminho: alvo };
   return { ok: false, msg: "não há como abrir neste sistema", caminho: alvo };
 }

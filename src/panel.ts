@@ -18,7 +18,7 @@ import { join, relative } from "node:path";
 import { BASE_DIR, CURSO_PASTA, PANEL_HOST, REPOSITORY } from "./config.ts";
 import { ARQ_INDICE, ARQ_TRANSCRICAO, PASTA as PASTA_ESCRITOS, arqDisciplina } from "./escritos.ts";
 import { lerTrechos, srtParaVtt } from "./legenda.ts";
-import { abrirNoSistema, caminhoDoItem, caminhoLegivel, revelar } from "./revelar.ts";
+import { abrirNoSistema, caminhoDoItem, caminhoLegivel, diario, revelar } from "./revelar.ts";
 import { PAGINA } from "./panel-ui.ts";
 import { log, reenfileirar, stats } from "./db.ts";
 
@@ -382,6 +382,9 @@ function iniciar(db: Database, porta: number): void {
           stats: stats(db),
           arvore: arvore(db),
           tarefas: estadoTarefas(),
+          // Últimos comandos disparados no sistema, para o painel mostrar o
+          // que foi tentado sem precisar abrir o terminal do servidor.
+          sistema: diario.slice(0, 6),
           eventos: db.query(`SELECT at, level, source, message FROM events ORDER BY id DESC LIMIT 120`).all(),
         });
       }
