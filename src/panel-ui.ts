@@ -72,6 +72,11 @@ export const PAGINA = `
  iframe.doc{width:100%;height:78vh;border:1px solid var(--linha);border-radius:10px;background:#fff}
  h2.tit{font-size:17px;margin:14px 0 4px;font-weight:650}
  .meta{color:var(--fraco);font-size:12.5px;margin-bottom:16px;display:flex;gap:14px;flex-wrap:wrap}
+ .arquivo{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:10px 0 16px}
+ .arquivo code{background:var(--card);border:1px solid var(--linha);border-radius:7px;
+   padding:6px 10px;font:12px/1.4 ui-monospace,Menlo,monospace;color:var(--fraco);
+   flex:1;min-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+ button.mini{padding:5px 10px;font-size:12.5px}
 
  .transc{background:var(--card);border:1px solid var(--linha);border-radius:10px;overflow:hidden}
  .transc>header{padding:10px 14px;border-bottom:1px solid var(--linha);display:flex;
@@ -261,6 +266,42 @@ async function abrirMd(arquivo, marca){
   });
 }
 
+/**
+ * Barra "onde está o arquivo": caminho no formato do sistema, botão para abrir
+ * o Explorer com ele selecionado e botão para copiar o caminho. O navegador não
+ * consegue revelar arquivo sozinho — quem faz é o servidor local.
+ */
+function barraArquivo(id){
+  return \`<div class="arquivo">
+      <code id="cam" title="carregando…">carregando caminho…</code>
+      <button class="sec mini" onclick="revelar(\${id})">Mostrar na pasta</button>
+      <button class="sec mini" onclick="copiarCaminho(this)">Copiar caminho</button>
+    </div>\`;
+}
+async function carregarCaminho(id){
+  const j = await (await fetch('/api/caminho?id='+id)).json();
+  const el = $('#cam'); if(!el) return;
+  el.textContent = j.caminho ?? '(sem arquivo)';
+  el.title = j.caminho ?? '';
+}
+async function revelar(id){
+  const r = await (await fetch('/api/revelar?id='+id,{method:'POST'})).json();
+  if(!r.ok) alert('Não consegui abrir: '+r.msg);
+}
+async function copiarCaminho(botao){
+  const t = $('#cam')?.textContent ?? '';
+  try { await navigator.clipboard.writeText(t); }
+  catch {
+    // clipboard API exige contexto seguro; em http://127.0.0.1 o Chrome
+    // permite, mas outros navegadores não — daí o modo antigo como reserva.
+    const a=document.createElement('textarea'); a.value=t; document.body.appendChild(a);
+    a.select(); document.execCommand('copy'); a.remove();
+  }
+  const o = botao.textContent;
+  botao.textContent = 'copiado ✓';
+  setTimeout(()=>{ botao.textContent = o; }, 1400);
+}
+
 async function abrir(id){
   itemAtual = id; pintarArvore();
   const r = dados.arvore.find(x => x.item_id === id);
@@ -276,7 +317,9 @@ async function abrir(id){
   if (r.kind !== 'video'){
     $('#conteudo').innerHTML = \`<h2 class="tit">\${esc(r.title)}</h2>
       <div class="meta"><span>\${esc(r.kind)}</span><span>\${mb(r.bytes)}</span></div>
+      \${barraArquivo(id)}
       <iframe class="doc" src="/media/\${id}"></iframe>\`;
+    carregarCaminho(id);
     return;
   }
 
@@ -293,12 +336,14 @@ async function abrir(id){
       \${r.duration?\`<span>\${relogio(r.duration)}</span>\`:''}
       <span>transcrição: \${r.transcribe_status}</span>
     </div>
+    \${barraArquivo(id)}
     <div class="transc">
       <header><h3>Transcrição</h3>
         <span class="tag" id="dica">clique numa fala para pular o vídeo</span></header>
       <div class="falas" id="falas">carregando…</div>
     </div>\`;
 
+  carregarCaminho(id);
   vid = $('#v');
   // A faixa precisa ser ligada no JS: o atributo default sozinho nem sempre
   // exibe a legenda. (Sem crases neste arquivo: encerram o template literal.)

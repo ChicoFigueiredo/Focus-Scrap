@@ -18,6 +18,7 @@ import { join, relative } from "node:path";
 import { BASE_DIR, CURSO_PASTA, PANEL_HOST, REPOSITORY } from "./config.ts";
 import { ARQ_INDICE, ARQ_TRANSCRICAO, PASTA as PASTA_ESCRITOS, arqDisciplina } from "./escritos.ts";
 import { lerTrechos, srtParaVtt } from "./legenda.ts";
+import { caminhoDoItem, caminhoLegivel, revelar } from "./revelar.ts";
 import { PAGINA } from "./panel-ui.ts";
 import { log, reenfileirar, stats } from "./db.ts";
 
@@ -327,7 +328,7 @@ export function servir(db: Database, porta: number): void {
   const servidor = Bun.serve({
     hostname: PANEL_HOST,
     port: porta,
-    fetch(req) {
+    async fetch(req) {
       const url = new URL(req.url);
       const rota = url.pathname;
 
@@ -341,6 +342,25 @@ export function servir(db: Database, porta: number): void {
           tarefas: estadoTarefas(),
           eventos: db.query(`SELECT at, level, source, message FROM events ORDER BY id DESC LIMIT 120`).all(),
         });
+      }
+
+      // "Mostrar na pasta": o caminho NUNCA vem da requisição — chega o id e o
+      // caminho sai do banco, senão uma URL forjada abriria qualquer arquivo.
+      if (rota === "/api/revelar" && req.method === "POST") {
+        const id = Number(url.searchParams.get("id"));
+        const r = db.query<{ rel_path: string | null }, [number]>(
+          `SELECT rel_path FROM items WHERE id=?`).get(id);
+        if (!r?.rel_path) return Response.json({ ok: false, msg: "item sem arquivo" });
+        return Response.json(await revelar(caminhoDoItem(r.rel_path)));
+      }
+
+      // Caminho do item no formato do sistema, para exibir e copiar.
+      if (rota === "/api/caminho") {
+        const id = Number(url.searchParams.get("id"));
+        const r = db.query<{ rel_path: string | null }, [number]>(
+          `SELECT rel_path FROM items WHERE id=?`).get(id);
+        if (!r?.rel_path) return Response.json({ caminho: null });
+        return Response.json({ caminho: await caminhoLegivel(caminhoDoItem(r.rel_path)) });
       }
 
       if (rota === "/api/run" && req.method === "POST") {
