@@ -84,6 +84,47 @@ async function paraWindows(caminho: string): Promise<string | null> {
   return saida.trim();
 }
 
+/** Aspas simples no PowerShell escapam dobrando. */
+const psStr = (t: string) => `'${t.replace(/'/g, "''")}'`;
+
+/**
+ * Script que abre o Explorer com o arquivo selecionado E traz a janela para
+ * frente. Cada pedaço existe por um motivo medido:
+ *
+ * 1. **PowerShell e não `cmd.exe`.** O cmd interpreta o argumento na codepage
+ *    OEM e destrói o UTF-8 que o WSL manda: caminho com acento
+ *    (`00-Transcrição.Tecnologia.Web.md`) simplesmente não abria janela
+ *    nenhuma. O PowerShell acerta.
+ *
+ * 2. **Nem `explorer.exe` direto.** O interop do WSL trata argumento começando
+ *    com "/" como caminho POSIX e mangla o `/select,`. Sai sem erro, código 1
+ *    (o normal do explorer) e sem abrir nada — medido: 11 janelas antes, 11
+ *    depois. Dentro do PowerShell quem interpreta é o Windows.
+ *
+ * 3. **O `SendKeys('%')` antes do `SetForegroundWindow`.** O Windows bloqueia
+ *    processo em segundo plano de roubar o foco: sem o ALT, a chamada devolve
+ *    False e a janela abre atrás de tudo. Com ele, devolve True e a janela vem
+ *    para frente.
+ */
+function psRevelar(win: string): string {
+  const pasta = win.replace(/\\[^\\]*$/, "");
+  return [
+    `explorer.exe /select,${psStr(win)}`,
+    `Start-Sleep -Milliseconds 1200`,
+    `$sig = '[DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);`,
+    `[DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int n);'`,
+    `$u = Add-Type -MemberDefinition $sig -Name FocusFS -Namespace FocusNS -PassThru`,
+    `$s = New-Object -ComObject Shell.Application`,
+    `$j = $s.Windows() | Where-Object { try { $_.Document.Folder.Self.Path -eq ${psStr(pasta)} } catch { $false } } | Select-Object -First 1`,
+    `if ($j) {`,
+    `  (New-Object -ComObject WScript.Shell).SendKeys('%')`,
+    `  Start-Sleep -Milliseconds 120`,
+    `  $u::ShowWindow([IntPtr]$j.HWND, 9) | Out-Null`,
+    `  if ($u::SetForegroundWindow([IntPtr]$j.HWND)) { Write-Output 'em primeiro plano' }`,
+    `} else { Write-Output 'janela nao localizada para focar' }`,
+  ].join("\n");
+}
+
 /** Estamos num WSL? O acervo aqui mora num disco Windows montado. */
 function noWsl(): boolean {
   return existsSync("/proc/sys/fs/binfmt_misc/WSLInterop") || !!process.env.WSL_DISTRO_NAME;
@@ -100,23 +141,10 @@ export async function revelar(alvo: string): Promise<Revelado> {
   if (noWsl()) {
     const win = await paraWindows(alvo);
     if (!win) return { ok: false, msg: "wslpath não converteu o caminho" };
-    // NÃO chamar `explorer.exe /select,…` direto: o interop do WSL trata
-    // argumento começando com "/" como caminho POSIX e o mangla, então o
-    // comando sai sem erro, com código 1 (o normal do explorer) e SEM abrir
-    // janela nenhuma. Medido: 11 janelas antes, 11 depois.
-    //
-    // Passando por `cmd.exe /c`, quem interpreta o `/select,` é o Windows, e
-    // aí funciona. O `/select,` precisa vir COLADO no caminho — com espaço o
-    // Explorer abre a pasta errada. O `cwd` em /mnt/c existe para o cmd não
-    // avisar que o diretório atual é `\\wsl.localhost\…` a cada chamada. E o
-    // explorer devolve 1 mesmo dando certo, então só stderr acusa problema.
-    const r = await rodar(
-      ["cmd.exe", "/c", `explorer.exe /select,"${win}"`],
-      { cwd: "/mnt/c" },
-    );
+    const r = await rodar(["powershell.exe", "-NoProfile", "-Command", psRevelar(win)]);
     return r.erro
-      ? { ok: false, msg: `cmd.exe reclamou: ${r.erro}`, caminho: win }
-      : { ok: true, msg: "Explorer aberto", caminho: win };
+      ? { ok: false, msg: `powershell reclamou: ${r.erro}`, caminho: win }
+      : { ok: true, msg: `Explorer aberto${r.saida ? ` (${r.saida})` : ""}`, caminho: win };
   }
 
   // Fora do WSL: tenta os gerenciadores que sabem selecionar o arquivo, e
@@ -159,9 +187,12 @@ export async function abrirNoSistema(alvo: string): Promise<Revelado> {
   if (noWsl()) {
     const win = await paraWindows(alvo);
     if (!win) return { ok: false, msg: "wslpath não converteu o caminho" };
-    const r = await rodar(["explorer.exe", win]);
+    // Também por PowerShell: o `explorer.exe` direto funciona com ASCII, mas o
+    // argumento com acento passa pelo mesmo caminho que quebrou no `/select`.
+    const r = await rodar(["powershell.exe", "-NoProfile", "-Command",
+      `Start-Process -FilePath ${psStr(win)}`]);
     return r.erro
-      ? { ok: false, msg: `explorer.exe reclamou: ${r.erro}`, caminho: win }
+      ? { ok: false, msg: `powershell reclamou: ${r.erro}`, caminho: win }
       : { ok: true, msg: "aberto no programa padrão do Windows", caminho: win };
   }
   if (Bun.which("xdg-open") && (await rodar(["xdg-open", alvo])).codigo === 0)
