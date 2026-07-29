@@ -16,6 +16,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 
 import { BASE_DIR, CURSO_PASTA, PANEL_HOST, REPOSITORY } from "./config.ts";
+import { COPIA_PATH, sincronizarCopia } from "./backup.ts";
 import { ARQ_INDICE, ARQ_TRANSCRICAO, PASTA as PASTA_ESCRITOS, arqDisciplina } from "./escritos.ts";
 import { lerTrechos, srtParaVtt } from "./legenda.ts";
 import { abrirNoSistema, caminhoDoItem, caminhoLegivel, diario, revelar } from "./revelar.ts";
@@ -153,6 +154,9 @@ function disparar(db: Database, nome: string): { ok: boolean; msg: string } {
     log(db, code === 0 ? "info" : "error", "painel",
       `${t.rotulo}: ${code === 0 ? "concluído" : `FALHOU (código ${code})`} em ${dur}s` +
       (fim ? ` — ${fim}` : ""));
+    // Toda tarefa mexe no banco — o worker Python, inclusive, por fora deste
+    // processo. Sincroniza a cópia aqui pega os dois lados sem duplicar lógica.
+    sincronizarCopia(db);
   });
 
   return { ok: true, msg: `${t.rotulo} iniciado` };
@@ -257,6 +261,18 @@ function disciplinas(db: Database) {
     ...d,
     transcricao: d.pasta ? `../${d.pasta}/${PASTA_ESCRITOS}/${arqDisciplina(d.nome)}` : null,
   }));
+}
+
+/** Estado da cópia do banco no acervo, para o painel mostrar sem esconder nada. */
+async function estadoSincronizacao() {
+  if (!existsSync(COPIA_PATH)) return { existe: false, bytes: 0, desdeMs: null, caminho: COPIA_PATH };
+  const st = statSync(COPIA_PATH);
+  return {
+    existe: true,
+    bytes: st.size,
+    desdeMs: Date.now() - st.mtimeMs,
+    caminho: await caminhoLegivel(COPIA_PATH),
+  };
 }
 
 /**
@@ -366,7 +382,19 @@ export function servir(db: Database, porta: number): void {
   }
 }
 
+/** A cada quantos minutos renovar a cópia enquanto alguma tarefa roda. */
+const SYNC_PERIODICO_MIN = 4;
+
 function iniciar(db: Database, porta: number): void {
+  // Uma cópia fresca antes de qualquer coisa — se o painel abrir depois de
+  // muito tempo parado, o usuário não fica olhando para uma cópia velha até a
+  // próxima tarefa terminar.
+  sincronizarCopia(db);
+  // Tarefas como `media` rodam por horas: sem isto, uma queda no meio deixaria
+  // a cópia dezenas de itens desatualizada. Só roda com tarefa ativa — parado,
+  // nada muda, e sincronizar de novo seria trabalho à toa.
+  setInterval(() => { if (rodando.size > 0) sincronizarCopia(db); }, SYNC_PERIODICO_MIN * 60_000);
+
   const servidor = Bun.serve({
     hostname: PANEL_HOST,
     port: porta,
@@ -386,7 +414,12 @@ function iniciar(db: Database, porta: number): void {
           // que foi tentado sem precisar abrir o terminal do servidor.
           sistema: diario.slice(0, 6),
           eventos: db.query(`SELECT at, level, source, message FROM events ORDER BY id DESC LIMIT 120`).all(),
+          sync: await estadoSincronizacao(),
         });
+      }
+
+      if (rota === "/api/sincronizar" && req.method === "POST") {
+        return Response.json(sincronizarCopia(db));
       }
 
       // Alvo de "mostrar na pasta" / "abrir" / "copiar caminho".

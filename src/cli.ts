@@ -1,6 +1,9 @@
 /** Entrypoint do focus-scrap. `bun run <comando>` — ver package.json. */
+import type { Database } from "bun:sqlite";
+
 import { login, type LoginResult } from "./auth.ts";
 import { connect, destravar, reenfileirar, stats } from "./db.ts";
+import { sincronizarCopia } from "./backup.ts";
 import { explorarDisciplina } from "./lesson.ts";
 import { scan } from "./scan.ts";
 import { assistir, pendentes } from "./assistir.ts";
@@ -9,6 +12,12 @@ import { capturarLivros } from "./livro.ts";
 import { comErro, scrape } from "./scrape.ts";
 import { servir } from "./panel.ts";
 import { PANEL_PORT, type Target } from "./config.ts";
+
+/** Sincroniza a cópia no acervo antes de fechar — "sempre" inclui aqui. */
+function fechar(db: Database): void {
+  sincronizarCopia(db);
+  db.close();
+}
 
 const [command, ...rest] = process.argv.slice(2);
 const flag = (name: string) => rest.includes(`--${name}`);
@@ -80,7 +89,7 @@ switch (command) {
       console.log("\navisos:");
       for (const a of r.avisos) console.log(" ⚠", a);
     }
-    db.close();
+    fechar(db);
     break;
   }
 
@@ -89,7 +98,7 @@ switch (command) {
     const r = scan(db, { aoProgredir: (m) => console.log(m) });
     console.log(`\n${r.casados}/${r.varridos} já no disco · ${r.transcritos} já transcrito(s) · ${r.renomeados} reapontado(s) · ${r.semArquivo} pendente(s)`);
     for (const o of r.orfaos) console.log(" ⚠", o);
-    db.close();
+    fechar(db);
     break;
   }
 
@@ -100,7 +109,7 @@ switch (command) {
     console.log(`tipos      `, s.porTipo);
     console.log(`download   `, s.porStatus);
     console.log(`bytes       ${(s.bytes / 1e9).toFixed(2)} GB`);
-    db.close();
+    fechar(db);
     break;
   }
 
@@ -108,7 +117,7 @@ switch (command) {
     const db = connect();
     const n = reenfileirar(db, flag("transcribe") ? "transcribe" : "download");
     console.log(`${n} item(ns) reenfileirado(s)`);
-    db.close();
+    fechar(db);
     break;
   }
 
@@ -118,11 +127,11 @@ switch (command) {
     const disc = rest.includes("--disciplina")
       ? valor("disciplina", 0)
       : pendentes(db)[0]?.disc_id;
-    if (!disc) { console.log("nada pendente — nada a assistir."); db.close(); break; }
+    if (!disc) { console.log("nada pendente — nada a assistir."); fechar(db); break; }
     const r = await assistir(db, MATRICULA, disc, { minutos: valor("minutos", 20) });
     console.log(`\n${r.capturadas} URL(s) capturada(s), ${r.atualizados} item(ns) atualizado(s)`);
     if (r.atualizados) console.log("Agora rode: bun run media");
-    db.close();
+    fechar(db);
     break;
   }
 
@@ -132,7 +141,7 @@ switch (command) {
     console.log(`${ps.length} item(ns) faltando:`);
     for (const p of ps)
       console.log(` disc ${String(p.disc_id).padEnd(5)} ${p.disc_pos}.${p.mod_pos}.${p.pos} [${p.kind.padEnd(5)}] ${p.title.slice(0,44)}`);
-    db.close();
+    fechar(db);
     break;
   }
 
@@ -142,7 +151,7 @@ switch (command) {
     const r = await gerarEscritos(db, { aoProgredir: (m) => console.log(m) });
     console.log(`\n${r.aulas} aula(s) · ${r.materiais} material(is) · ${(r.caracteres/1000).toFixed(0)}k caracteres`);
     for (const a of r.arquivos) console.log("   →", a);
-    db.close();
+    fechar(db);
     break;
   }
 
@@ -153,7 +162,7 @@ switch (command) {
     const r = await capturarLivros(db, { aoProgredir: (m) => console.log(m) });
     console.log(`\n${r.ok}/${r.tentados} livro(s) capturado(s)`);
     for (const f of r.falhas) console.log(" ⚠", f);
-    db.close();
+    fechar(db);
     break;
   }
 

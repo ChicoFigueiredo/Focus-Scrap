@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import argparse
 
-from . import config, db, downloader, transcriber
+from . import backup, config, db, downloader, transcriber
 
 
 def destravar(conn) -> int:
@@ -52,6 +52,10 @@ def main() -> int:
         "SELECT download_status AS s, COUNT(*) AS n FROM items GROUP BY 1"
     ).fetchall()
     print("fila:", {r["s"]: r["n"] for r in fila})
+
+    r = backup.sincronizar_copia(conn)
+    print(f"cópia do banco: ok ({r['bytes']/1e6:.1f} MB)" if r["ok"]
+          else f"cópia do banco: falhou — {r.get('erro')}")
 
     conn.close()
     return 0

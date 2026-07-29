@@ -163,6 +163,9 @@ const mb = b => !b ? '' : b > 1e9 ? (b/1e9).toFixed(2)+' GB' : (b/1e6).toFixed(1
 const dd = n => String(n).padStart(2,'0');
 const relogio = s => { s=Math.max(0,Math.floor(s||0)); const h=Math.floor(s/3600),m=Math.floor(s%3600/60),r=s%60;
   return h ? h+':'+dd(m)+':'+dd(r) : m+':'+dd(r); };
+const haTempo = ms => { if(ms==null) return 'nunca';
+  const s=Math.floor(ms/1000); if(s<60) return 'há '+s+'s'; if(s<3600) return 'há '+Math.floor(s/60)+'min';
+  return 'há '+Math.floor(s/3600)+'h'; };
 
 let dados = null, discAtual = null, itemAtual = null, falas = [], vid = null;
 let palco = null, ordem = [];
@@ -552,8 +555,32 @@ function pintarAcoes(){
         ? \`<div class="tag" style="margin-top:12px">Comandos no sistema</div>
            <pre class="saida">\${dados.sistema.map(c =>
              esc(\`\${c.cmd}\n  código=\${c.codigo}\${c.erro?' erro='+c.erro:''}\${c.saida?' saída='+c.saida:''}\`)).join('\\n')}</pre>\` : '')
+    + pintarSync()
     + \`<ul class="ev">\${dados.eventos.slice(0,14).map(e =>
       \`<li><span class="tag">\${e.at}</span> <b class="\${e.level==='error'?'erro':''}">\${esc(e.source)}</b> \${esc(e.message)}</li>\`).join('')}</ul>\`;
+}
+
+/**
+ * Cópia do focus.db dentro do acervo — sobrevive mesmo se BASE_DIR se perder.
+ * Sincronizada sozinha (a cada tarefa e periodicamente), mas o botão força na
+ * hora quando o usuário quiser ter certeza antes de desligar a máquina.
+ */
+function pintarSync(){
+  const s = dados.sync;
+  if (!s) return '';
+  return \`<div style="margin-top:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <span class="tag">Cópia do banco no acervo</span>
+      <code style="font-size:11.5px;color:var(--fraco)">\${esc(s.caminho)}</code>
+      <span class="tag">\${s.existe ? mb(s.bytes)+' · sincronizada '+haTempo(s.desdeMs) : 'ainda não sincronizada'}</span>
+      <button class="sec mini" onclick="sincronizar(this)">Sincronizar agora</button>
+    </div>\`;
+}
+async function sincronizar(botao){
+  const o = botao.textContent; botao.textContent = 'sincronizando…'; botao.disabled = true;
+  const r = await (await fetch('/api/sincronizar',{method:'POST'})).json();
+  botao.textContent = o; botao.disabled = false;
+  if(!r.ok) alert('Falha ao sincronizar a cópia: '+r.erro);
+  carregar();
 }
 async function rodar(nome){
   const r = await (await fetch('/api/run?tarefa='+nome,{method:'POST'})).json();

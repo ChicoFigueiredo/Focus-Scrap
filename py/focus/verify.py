@@ -21,7 +21,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from . import config, db
+from . import backup, config, db
 from .downloader import duracao_segundos
 
 # Um vídeo de aula abaixo disto é quase certamente erro de download, não aula.
@@ -121,6 +121,7 @@ def main() -> int:
     r = rodar(conn, corrigir=not a.dry_run)
     for k, v in r.items():
         print(f"  {k.replace('_',' '):22} {v}")
+    backup.sincronizar_copia(conn)
     conn.close()
     return 1 if r["reprovados"] else 0
 

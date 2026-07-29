@@ -53,6 +53,7 @@ contrato entre eles — nenhum dos dois chama o outro por rede:
 │ livro.ts     Livro Digital → PDF         │   │                     │
 │ escritos.ts  "00-Materiais Escritos"     │   │                     │
 │ revelar.ts   abre Explorer/nautilus etc. │   │                     │
+│ backup.ts    cópia de focus.db no acervo │◀──│ backup.py           │
 │ panel.ts     dashboard + explorador :7788│   │                     │
 └──────────────────────────────────────────┘   └─────────────────────┘
                     └────────  focus.db (WAL)  ──────────┘
@@ -71,6 +72,17 @@ poupa a placa de reprocessar.
 O venv do uv é criado com `--system-site-packages` para enxergar o
 `faster-whisper` e o `torch` com CUDA já instalados no sistema, em vez de
 baixar ~2,5 GB de novo.
+
+**`focus.db` também vive dentro do acervo.** O banco "de trabalho" fica em
+`BASE_DIR`, fora do disco de estudo — sem a redundância que os arquivos
+capturados já têm em `repository`. Toda vez que um comando (TS ou Python)
+termina, ele grava uma cópia consistente em `repository/focus.db` via
+`VACUUM INTO` (não é cópia de arquivo cru: o banco roda em WAL, e copiar o
+`.db` bruto arriscaria uma foto sem os dados ainda só no `.db-wal`). O painel
+também renova essa cópia periodicamente enquanto alguma tarefa está rodando —
+`media` pode ficar horas baixando — e mostra caminho, tamanho e "sincronizada
+há Xmin" nas Ações, com um botão para forçar na hora. Ver
+[src/backup.ts](src/backup.ts) / [py/focus/backup.py](py/focus/backup.py).
 
 ### Cadeia de fallback do download
 
