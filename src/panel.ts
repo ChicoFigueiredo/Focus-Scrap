@@ -218,7 +218,7 @@ interface LinhaArvore {
   disc_id: number; disc_pos: number; disc_nome: string; disc_folder: string | null;
   mod_id: number; mod_pos: number; mod_nome: string; mod_folder: string | null;
   item_id: number | null; kind: string | null; position: number | null; title: string | null;
-  rel_path: string | null; bytes: number | null; download_status: string | null;
+  rel_path: string | null; bytes: number | null; duration: number | null; download_status: string | null;
   transcribe_status: string | null; download_error: string | null;
 }
 
@@ -226,7 +226,7 @@ function arvore(db: Database): LinhaArvore[] {
   return db.query<LinhaArvore, []>(`
     SELECT d.id AS disc_id, d.position AS disc_pos, d.name AS disc_nome, d.folder AS disc_folder,
            m.id AS mod_id, m.position AS mod_pos, m.name AS mod_nome, m.folder AS mod_folder,
-           i.id AS item_id, i.kind, i.position, i.title, i.rel_path, i.bytes,
+           i.id AS item_id, i.kind, i.position, i.title, i.rel_path, i.bytes, i.duration,
            i.download_status, i.transcribe_status, i.download_error
       FROM disciplines d
       LEFT JOIN modules m ON m.discipline_id = d.id

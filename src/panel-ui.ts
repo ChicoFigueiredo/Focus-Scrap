@@ -70,6 +70,31 @@ export const PAGINA = `
  .vazio{color:var(--fraco);display:grid;place-items:center;height:100%;text-align:center}
  video{width:100%;max-height:46vh;background:#000;border-radius:10px;display:block}
  iframe.doc{width:100%;height:78vh;border:1px solid var(--linha);border-radius:10px;background:#fff}
+
+ /* O palco é o vídeo mais os controles próprios. Existe por causa da tela
+    cheia: o botão nativo põe em tela cheia o VIDEO, e aí só sobra o vídeo na
+    tela — as setas de navegação somem junto com o resto da página. Escondo o
+    botão nativo (Chrome/Edge) e uso o meu, que põe o PALCO inteiro em tela
+    cheia; assim as setas continuam por cima. Em navegador que não aceita o
+    seletor, o troca-tela-cheia no JS conserta depois. */
+ .palco{position:relative;background:#000;border-radius:10px;overflow:hidden}
+ .palco:fullscreen{border-radius:0;display:grid;place-items:center;width:100vw;height:100vh}
+ .palco:fullscreen video{max-height:100vh;height:100vh;object-fit:contain}
+ video::-webkit-media-controls-fullscreen-button{display:none}
+
+ /* Aparecem ao mexer o mouse e enquanto está parado, como os controles nativos. */
+ .nav,.hud{position:absolute;opacity:0;transition:opacity .18s;pointer-events:none}
+ .palco.mexeu .nav,.palco.mexeu .hud,.palco.parado .nav,.palco.parado .hud{opacity:1}
+ .nav{top:0;bottom:52px;left:0;right:0;display:flex;align-items:center;
+   justify-content:space-between;padding:0 10px}
+ .nav button{pointer-events:auto;width:44px;height:66px;border-radius:10px;
+   background:#000a;color:#fff;font-size:26px;line-height:1}
+ .nav button:disabled{opacity:0;pointer-events:none}
+ .hud{top:10px;left:10px;right:10px;display:flex;gap:8px;align-items:center}
+ .chip{background:#000a;color:#fff;border:0;border-radius:8px;padding:5px 10px;font-size:12.5px}
+ .hud button.chip{pointer-events:auto}
+ .hud .rot{min-width:0;max-width:58%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+ .hud #fs{margin-left:auto}
  h2.tit{font-size:17px;margin:14px 0 4px;font-weight:650}
  .meta{color:var(--fraco);font-size:12.5px;margin-bottom:16px;display:flex;gap:14px;flex-wrap:wrap}
  .arquivo{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:10px 0 16px}
@@ -140,6 +165,7 @@ const relogio = s => { s=Math.max(0,Math.floor(s||0)); const h=Math.floor(s/3600
   return h ? h+':'+dd(m)+':'+dd(r) : m+':'+dd(r); };
 
 let dados = null, discAtual = null, itemAtual = null, falas = [], vid = null;
+let palco = null, ordem = [];
 
 async function carregar(){
   dados = await (await fetch('/api/tudo')).json();
@@ -312,12 +338,14 @@ async function copiarCaminho(botao){
   setTimeout(()=>{ botao.textContent = o; }, 1400);
 }
 
-async function abrir(id){
+async function abrir(id, tocar){
   itemAtual = id; pintarArvore();
+  $('#arvore .item.on')?.scrollIntoView({block:'nearest'});
   const r = dados.arvore.find(x => x.item_id === id);
   if(!r) return;
 
   if (r.download_status !== 'done'){
+    palco = vid = null;
     $('#conteudo').innerHTML = \`<h2 class="tit">\${esc(r.title)}</h2>
       <div class="meta">status: <b class="\${r.download_status}">\${r.download_status}</b></div>
       \${r.download_error?\`<p class="erro">\${esc(r.download_error)}</p>\`:'<p class="tag">Ainda não capturado.</p>'}\`;
@@ -325,6 +353,7 @@ async function abrir(id){
   }
 
   if (r.kind !== 'video'){
+    palco = vid = null;
     $('#conteudo').innerHTML = \`<h2 class="tit">\${esc(r.title)}</h2>
       <div class="meta"><span>\${esc(r.kind)}</span><span>\${mb(r.bytes)}</span></div>
       \${barraArquivo({id})}
@@ -333,46 +362,166 @@ async function abrir(id){
     return;
   }
 
-  // O <track> só aceita WebVTT; o servidor converte o .srt do acervo na hora.
+  // Só monta o palco se ainda não houver um na tela. Trocar de aula sem refazer
+  // o DOM é o que permite continuar em tela cheia ao pular para a próxima: o
+  // elemento em tela cheia é o palco, e ele sobrevive à troca.
+  if (!palco || !document.contains(palco)) montarPalco();
+  await carregarVideo(r, tocar);
+}
+
+/** A moldura fixa da tela de vídeo — montada uma vez, reaproveitada nas trocas. */
+function montarPalco(){
   $('#conteudo').innerHTML = \`
-    <video id="v" controls preload="metadata">
-      <source src="/media/\${id}" type="video/mp4">
-      <track id="leg" kind="subtitles" srclang="pt" label="Português" src="/legenda/\${id}" default>
-    </video>
-    <h2 class="tit">\${esc(r.title)}</h2>
-    <div class="meta">
-      <span>\${dd(r.mod_pos)}.\${dd(r.position)}</span>
-      <span>\${mb(r.bytes)}</span>
-      \${r.duration?\`<span>\${relogio(r.duration)}</span>\`:''}
-      <span>transcrição: \${r.transcribe_status}</span>
+    <div class="palco parado" id="palco">
+      <video id="v" controls preload="metadata" playsinline></video>
+      <div class="nav">
+        <button id="ant" onclick="irVizinho(-1)">‹</button>
+        <button id="prox" onclick="irVizinho(1)">›</button>
+      </div>
+      <div class="hud">
+        <button class="chip" id="vel" onclick="ciclarVel()"
+          title="Velocidade — fica salva de uma aula para a outra">1×</button>
+        <span class="chip rot" id="hudtit"></span>
+        <button class="chip" id="fs" onclick="telaCheia()" title="Tela cheia (F)">⛶</button>
+      </div>
     </div>
-    \${barraArquivo({id})}
+    <h2 class="tit" id="tit"></h2>
+    <div class="meta" id="met"></div>
+    <div id="barra"></div>
     <div class="transc">
       <header><h3>Transcrição</h3>
         <span class="tag" id="dica">clique numa fala para pular o vídeo</span></header>
       <div class="falas" id="falas">carregando…</div>
     </div>\`;
+  palco = $('#palco'); vid = $('#v');
 
-  carregarCaminho({id});
-  vid = $('#v');
-  // A faixa precisa ser ligada no JS: o atributo default sozinho nem sempre
-  // exibe a legenda. (Sem crases neste arquivo: encerram o template literal.)
+  // Ouvintes registrados uma vez só: o elemento agora atravessa várias aulas,
+  // e registrar por aula empilharia uma cópia a cada troca.
   vid.addEventListener('loadedmetadata', () => {
+    // A faixa precisa ser ligada no JS: o atributo default sozinho nem sempre
+    // exibe a legenda. (Sem crases neste arquivo: encerram o template literal.)
     for (const t of vid.textTracks) t.mode = 'showing';
   });
-
-  falas = await (await fetch('/transcricao/'+id)).json();
-  const cx = $('#falas');
-  if (!falas.length){
-    cx.innerHTML = '<div class="corrido tag">Sem transcrição para esta aula.</div>';
-    $('#dica').textContent = '';
-    return;
-  }
-  cx.innerHTML = falas.map((f,i) =>
-    \`<div class="fala" data-i="\${i}" onclick="irPara(\${f.inicio})">
-       <time>\${relogio(f.inicio)}</time><span>\${esc(f.texto)}</span></div>\`).join('');
   vid.addEventListener('timeupdate', destacar);
+  vid.addEventListener('play',  () => palco.classList.remove('parado'));
+  vid.addEventListener('pause', () => palco.classList.add('parado'));
+  // Velocidade trocada pelo menu nativo do player também é guardada.
+  vid.addEventListener('ratechange', () => {
+    vid.defaultPlaybackRate = vid.playbackRate;
+    localStorage.setItem(CHAVE_VEL, String(vid.playbackRate));
+    mostrarVel(vid.playbackRate);
+  });
+  palco.addEventListener('mousemove', mexeu);
 }
+
+/** Troca a aula em cartaz sem tocar na moldura. */
+async function carregarVideo(r, tocar){
+  const id = r.item_id;
+  vid.querySelectorAll('track').forEach(t => t.remove());
+  vid.src = '/media/' + id;
+  // O <track> só aceita WebVTT; o servidor converte o .srt do acervo na hora.
+  // Elemento novo a cada aula: reaproveitar o mesmo deixa as legendas antigas
+  // penduradas na faixa.
+  const faixa = document.createElement('track');
+  Object.assign(faixa, {kind:'subtitles', srclang:'pt', label:'Português',
+    src:'/legenda/'+id, default:true});
+  vid.appendChild(faixa);
+  vid.load();
+  // Depois do load(): ele redefine playbackRate a partir de defaultPlaybackRate.
+  definirVel(velocidade());
+
+  $('#tit').textContent = r.title;
+  $('#hudtit').textContent = dd(r.mod_pos)+'.'+dd(r.position)+' — '+r.title;
+  $('#met').innerHTML =
+    \`<span>\${dd(r.mod_pos)}.\${dd(r.position)}</span><span>\${mb(r.bytes)}</span>\` +
+    (r.duration?\`<span>\${relogio(r.duration)}</span>\`:'') +
+    \`<span>transcrição: \${r.transcribe_status}</span>\`;
+  $('#barra').innerHTML = barraArquivo({id});
+  carregarCaminho({id});
+  arrumarSetas(r);
+  mexeu();
+  if (tocar) vid.play().catch(()=>{});
+
+  falas = []; ultimo = -1;
+  const cx = $('#falas');
+  cx.innerHTML = 'carregando…';
+  const lidas = await (await fetch('/transcricao/'+id)).json();
+  if (itemAtual !== id) return;  // trocou de aula enquanto isto vinha
+  falas = lidas;
+  $('#dica').textContent = falas.length ? 'clique numa fala para pular o vídeo' : '';
+  cx.innerHTML = falas.length
+    ? falas.map((f,i) =>
+        \`<div class="fala" data-i="\${i}" onclick="irPara(\${f.inicio})">
+           <time>\${relogio(f.inicio)}</time><span>\${esc(f.texto)}</span></div>\`).join('')
+    : '<div class="corrido tag">Sem transcrição para esta aula.</div>';
+}
+
+/**
+ * Aulas vizinhas: os vídeos já capturados da mesma disciplina, na ordem da
+ * árvore (a consulta do servidor já vem ordenada por módulo e posição).
+ */
+function arrumarSetas(r){
+  ordem = dados.arvore.filter(x =>
+    x.disc_id === r.disc_id && x.kind === 'video' && x.download_status === 'done');
+  const i = ordem.findIndex(x => x.item_id === r.item_id);
+  const por = (el, alvo, rot) => {
+    el.disabled = !alvo;
+    el.title = alvo ? \`\${rot}: \${dd(alvo.mod_pos)}.\${dd(alvo.position)} \${alvo.title}\` : '';
+  };
+  por($('#ant'), ordem[i-1], 'Anterior (P)');
+  por($('#prox'), ordem[i+1], 'Próxima (N)');
+}
+function irVizinho(passo){
+  const i = ordem.findIndex(x => x.item_id === itemAtual);
+  const alvo = i < 0 ? null : ordem[i+passo];
+  if (alvo) abrir(alvo.item_id, true);
+}
+
+/** Controles somem sozinhos enquanto o vídeo roda e o mouse está quieto. */
+let sumico;
+function mexeu(){
+  if(!palco) return;
+  palco.classList.add('mexeu');
+  clearTimeout(sumico);
+  sumico = setTimeout(() => { if (vid && !vid.paused) palco.classList.remove('mexeu'); }, 2600);
+}
+
+// --- velocidade -------------------------------------------------------------
+// Guardada no navegador para valer entre aulas e entre sessões: é preferência
+// de quem assiste, não propriedade do arquivo.
+const CHAVE_VEL = 'focus.velocidade';
+const VELS = [0.75, 1, 1.25, 1.5, 1.75, 2];
+function velocidade(){ const v = Number(localStorage.getItem(CHAVE_VEL)); return v > 0 ? v : 1; }
+function mostrarVel(v){ const c = $('#vel'); if(c) c.textContent = v + '×'; }
+function definirVel(v){
+  localStorage.setItem(CHAVE_VEL, String(v));
+  if (vid){ vid.defaultPlaybackRate = v; vid.playbackRate = v; }
+  mostrarVel(v);
+}
+function ciclarVel(){
+  const i = VELS.indexOf(vid ? vid.playbackRate : velocidade());
+  definirVel(VELS[(i+1) % VELS.length]);
+}
+
+// --- tela cheia -------------------------------------------------------------
+function telaCheia(){
+  if (document.fullscreenElement) document.exitFullscreen();
+  else palco?.requestFullscreen?.();
+}
+// Reserva: se algo puser o VÍDEO em tela cheia (menu de contexto, ou navegador
+// que ignora o seletor que esconde o botão nativo), troca pelo palco — senão as
+// setas ficam de fora e a navegação em tela cheia não existe.
+document.addEventListener('fullscreenchange', () => {
+  if (vid && palco && document.fullscreenElement === vid)
+    document.exitFullscreen().then(() => palco.requestFullscreen?.()).catch(()=>{});
+});
+document.addEventListener('keydown', e => {
+  if (!vid || !document.contains(vid)) return;
+  if (/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return;
+  const k = e.key.toLowerCase();
+  if (k === 'n' || k === 'p'){ e.preventDefault(); irVizinho(k === 'n' ? 1 : -1); }
+  else if (k === 'f'){ e.preventDefault(); telaCheia(); }
+});
 
 function irPara(s){ if(vid){ vid.currentTime = s; vid.play(); } }
 
