@@ -353,48 +353,44 @@ function dentroDoAcervo(rel: string): string | null {
 /**
  * Traduz falha de bind em instrução, não em stack trace.
  *
- * Porta ocupada é o erro mais provável aqui — quase sempre um painel anterior
- * que ficou vivo. O `EADDRINUSE` cru manda o leitor para dentro do Bun.serve,
- * que é o único lugar onde a resposta não está.
+ * Porta ocupada não é mais tratada aqui: `servir` tenta as próximas
+ * automaticamente. Sobram os erros de permissão e os inesperados.
  */
 function explicarFalhaDeRede(e: unknown, porta: number): never {
   const cod = (e as { code?: string })?.code;
-  if (cod === "EADDRINUSE") {
-    console.error(`\nA porta ${porta} já está em uso — provavelmente outro painel rodando.\n`);
-    console.error("  ver quem está:  ss -lptn 'sport = :" + porta + "'");
-    console.error("  encerrar     :  pkill -f 'src/cli.ts panel'");
-    console.error(`  ou usar outra:  FOCUS_PANEL_PORT=${porta + 1} bun run panel\n`);
-    process.exit(1);
-  }
   if (cod === "EACCES") {
     console.error(`\nSem permissão para abrir a porta ${porta}.`);
-    console.error(`Abaixo de 1024 exige root; use FOCUS_PANEL_PORT=7788.\n`);
+    console.error(`Abaixo de 1024 exige root; use bun run panel --port 7788.\n`);
     process.exit(1);
   }
   throw e;
 }
 
+/** Quantas portas consecutivas tentar a partir da pedida antes de desistir. */
+const TENTATIVAS_PORTA = 20;
+
 export function servir(db: Database, porta: number): void {
-  try {
-    return iniciar(db, porta);
-  } catch (e) {
-    explicarFalhaDeRede(e, porta);
+  for (let p = porta; p < porta + TENTATIVAS_PORTA; p++) {
+    try {
+      if (p !== porta) console.log(`porta ${p - 1} em uso — tentando ${p}…`);
+      return iniciar(db, p);
+    } catch (e) {
+      if ((e as { code?: string })?.code === "EADDRINUSE") continue;
+      explicarFalhaDeRede(e, p);
+    }
   }
+  console.error(`\nNenhuma porta livre entre ${porta} e ${porta + TENTATIVAS_PORTA - 1}.`);
+  console.error("  ver quem está:  ss -lptn 'sport = :" + porta + "'");
+  console.error("  encerrar     :  pkill -f 'src/cli.ts panel'\n");
+  process.exit(1);
 }
 
 /** A cada quantos minutos renovar a cópia enquanto alguma tarefa roda. */
 const SYNC_PERIODICO_MIN = 4;
 
 function iniciar(db: Database, porta: number): void {
-  // Uma cópia fresca antes de qualquer coisa — se o painel abrir depois de
-  // muito tempo parado, o usuário não fica olhando para uma cópia velha até a
-  // próxima tarefa terminar.
-  sincronizarCopia(db);
-  // Tarefas como `media` rodam por horas: sem isto, uma queda no meio deixaria
-  // a cópia dezenas de itens desatualizada. Só roda com tarefa ativa — parado,
-  // nada muda, e sincronizar de novo seria trabalho à toa.
-  setInterval(() => { if (rodando.size > 0) sincronizarCopia(db); }, SYNC_PERIODICO_MIN * 60_000);
-
+  // O bind vem primeiro: se a porta estiver ocupada, `servir` tenta a próxima
+  // sem ter rodado sync nem armado interval à toa.
   const servidor = Bun.serve({
     hostname: PANEL_HOST,
     port: porta,
@@ -513,4 +509,13 @@ function iniciar(db: Database, porta: number): void {
     },
   });
   console.log(`painel em http://${servidor.hostname}:${servidor.port}`);
+
+  // Uma cópia fresca logo na abertura — se o painel abrir depois de muito
+  // tempo parado, o usuário não fica olhando para uma cópia velha até a
+  // próxima tarefa terminar.
+  sincronizarCopia(db);
+  // Tarefas como `media` rodam por horas: sem isto, uma queda no meio deixaria
+  // a cópia dezenas de itens desatualizada. Só roda com tarefa ativa — parado,
+  // nada muda, e sincronizar de novo seria trabalho à toa.
+  setInterval(() => { if (rodando.size > 0) sincronizarCopia(db); }, SYNC_PERIODICO_MIN * 60_000);
 }

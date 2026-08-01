@@ -92,9 +92,17 @@ export const PAGINA = `
  .nav button:disabled{opacity:0;pointer-events:none}
  .hud{top:10px;left:10px;right:10px;display:flex;gap:8px;align-items:center}
  .chip{background:#000a;color:#fff;border:0;border-radius:8px;padding:5px 10px;font-size:12.5px}
+ .chip.on{background:var(--ac)}
  .hud button.chip{pointer-events:auto}
- .hud .rot{min-width:0;max-width:58%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+ .hud .rot{min-width:0;max-width:44%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
  .hud #fs{margin-left:auto}
+
+ /* A legenda nativa é dimensionada em porcentagem da ALTURA DO VÍDEO: em tela
+    cheia ela dobra de tamanho sozinha. Fixar em px desliga essa proporção — o
+    texto fica do mesmo tamanho na janela e em tela cheia. O tamanho em si é
+    escolhido por quem assiste (chip "Aa"), e a regra vai num <style> próprio,
+    reescrito pelo JS, porque ::cue não enxerga variável CSS no Chrome. */
+ video::cue{line-height:1.35;background:#000b}
  h2.tit{font-size:17px;margin:14px 0 4px;font-weight:650}
  .meta{color:var(--fraco);font-size:12.5px;margin-bottom:16px;display:flex;gap:14px;flex-wrap:wrap}
  .arquivo{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:10px 0 16px}
@@ -135,6 +143,7 @@ export const PAGINA = `
  ul.ev li{padding:4px 0;border-top:1px solid var(--linha);color:var(--fraco)}
  .erro{color:var(--erro)}
 </style>
+<style id="estcue"></style>
 
 <header>
   <h1>focus-scrap</h1>
@@ -384,6 +393,8 @@ function montarPalco(){
       <div class="hud">
         <button class="chip" id="vel" onclick="ciclarVel()"
           title="Velocidade — fica salva de uma aula para a outra">1×</button>
+        <button class="chip" id="auto" onclick="trocarAuto()">Auto ▸</button>
+        <button class="chip" id="leg" onclick="ciclarLeg()">Aa</button>
         <span class="chip rot" id="hudtit"></span>
         <button class="chip" id="fs" onclick="telaCheia()" title="Tela cheia (F)">⛶</button>
       </div>
@@ -414,7 +425,12 @@ function montarPalco(){
     localStorage.setItem(CHAVE_VEL, String(vid.playbackRate));
     mostrarVel(vid.playbackRate);
   });
+  // Autoplay: emenda na próxima aula quando esta termina. Só o fim natural
+  // dispara 'ended' — trocar de aula no meio, não. Em tela cheia continua em
+  // tela cheia, porque quem está em tela cheia é o palco, não o vídeo.
+  vid.addEventListener('ended', () => { if (autoplay()) irVizinho(1); });
   palco.addEventListener('mousemove', mexeu);
+  mostrarAuto(); aplicarLeg();
 }
 
 /** Troca a aula em cartaz sem tocar na moldura. */
@@ -505,6 +521,44 @@ function ciclarVel(){
   const i = VELS.indexOf(vid ? vid.playbackRate : velocidade());
   definirVel(VELS[(i+1) % VELS.length]);
 }
+
+// --- autoplay ---------------------------------------------------------------
+// Mesma ideia da velocidade: preferência de quem assiste, guardada no navegador.
+const CHAVE_AUTO = 'focus.autoplay';
+function autoplay(){ return localStorage.getItem(CHAVE_AUTO) === '1'; }
+function mostrarAuto(){
+  const c = $('#auto'); if(!c) return;
+  const on = autoplay();
+  c.classList.toggle('on', on);
+  c.textContent = on ? 'Auto ▶' : 'Auto';
+  c.title = on
+    ? 'Autoplay ligado: ao terminar, emenda na próxima aula'
+    : 'Autoplay desligado: para no fim da aula';
+}
+function trocarAuto(){
+  localStorage.setItem(CHAVE_AUTO, autoplay() ? '0' : '1');
+  mostrarAuto();
+}
+
+// --- tamanho da legenda -----------------------------------------------------
+// Em px, e não em porcentagem, justamente para NÃO acompanhar o tamanho do
+// vídeo — ver o comentário do video::cue lá no CSS.
+const CHAVE_LEG = 'focus.legenda';
+const LEGS = [15, 18, 22, 27];
+function tamLegenda(){ const v = Number(localStorage.getItem(CHAVE_LEG)); return LEGS.includes(v) ? v : 18; }
+function aplicarLeg(){
+  const v = tamLegenda();
+  const est = $('#estcue');
+  if (est) est.textContent = 'video::cue{font-size:' + v + 'px}';
+  const c = $('#leg');
+  if (c){ c.textContent = 'Aa ' + v; c.title = 'Tamanho da legenda (' + v + 'px) — igual em tela cheia'; }
+}
+function ciclarLeg(){
+  const i = LEGS.indexOf(tamLegenda());
+  localStorage.setItem(CHAVE_LEG, String(LEGS[(i+1) % LEGS.length]));
+  aplicarLeg();
+}
+aplicarLeg();
 
 // --- tela cheia -------------------------------------------------------------
 function telaCheia(){

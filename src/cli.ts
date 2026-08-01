@@ -25,6 +25,14 @@ const valor = (name: string, padrao: number) => {
   const i = rest.indexOf(`--${name}`);
   return i >= 0 && rest[i + 1] ? Number(rest[i + 1]) : padrao;
 };
+/** Como `valor`, mas aceitando também a forma curta (`-p 7788`). */
+const valorCurto = (longo: string, curto: string, padrao: number) => {
+  for (const nome of [`--${longo}`, `-${curto}`]) {
+    const i = rest.indexOf(nome);
+    if (i >= 0 && rest[i + 1]) return Number(rest[i + 1]);
+  }
+  return padrao;
+};
 const MATRICULA = valor("enrollment", 28859);
 
 function report(r: LoginResult): void {
@@ -169,7 +177,7 @@ switch (command) {
   case "panel": {
     const db = connect();
     destravar(db);
-    servir(db, PANEL_PORT);
+    servir(db, valorCurto("port", "p", PANEL_PORT));
     break;   // servidor segue rodando
   }
 
@@ -180,6 +188,7 @@ switch (command) {
     console.error("     --com-erro          só as disciplinas com item em erro");
     console.error("     --continuar         pula as já catalogadas");
     console.error("     --headed            abre o navegador para depurar");
+    console.error("     --port, -p <porta>  porta do painel (se ocupada, tenta a próxima)");
     process.exit(1);
   }
 }
