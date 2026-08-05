@@ -96,6 +96,26 @@ CREATE TABLE IF NOT EXISTS patterns (
   model      TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- Progresso de quem assiste: onde cada aula parou e o que já foi visto.
+--
+-- Fica no banco, e não no navegador, por dois motivos: é dado do acervo (vai
+-- junto na cópia sincronizada do focus.db) e não some quando alguém limpa os
+-- dados do site. A chave é texto porque nem tudo na árvore é item do banco:
+-- "i:317" é o item 317, "md:<caminho>" é um material escrito, que é arquivo.
+-- A coluna seconds só faz sentido para vídeo; nos outros fica em 0.
+CREATE TABLE IF NOT EXISTS progress (
+  chave      TEXT    PRIMARY KEY,
+  seconds    REAL    NOT NULL DEFAULT 0,
+  done       INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
+-- O que o painel tinha aberto quando foi fechado, para reabrir na mesma tela.
+CREATE TABLE IF NOT EXISTS ui_state (
+  name  TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 `;
 
 export function connect(path: string = DB_PATH): Database {

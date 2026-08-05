@@ -239,6 +239,50 @@ function arvore(db: Database): LinhaArvore[] {
   `).all();
 }
 
+/**
+ * Progresso de quem assiste, como mapa `chave → {segundos, visto}`.
+ *
+ * Vai inteiro para o painel de uma vez: é uma linha por material já tocado, e
+ * pedir de novo a cada aula custaria mais do que mandar tudo junto.
+ */
+function progresso(db: Database) {
+  const rs = db.query<{ chave: string; seconds: number; done: number }, []>(
+    `SELECT chave, seconds, done FROM progress`).all();
+  return Object.fromEntries(rs.map((r) => [r.chave, { segundos: r.seconds, visto: !!r.done }]));
+}
+
+/** Anota posição e/ou marca de visto. O que não vier na requisição fica como está. */
+function anotarProgresso(db: Database, chave: string, segundos: number | null, visto: number | null) {
+  db.run(`INSERT INTO progress (chave) VALUES (?) ON CONFLICT(chave) DO NOTHING`, [chave]);
+  if (segundos !== null)
+    db.run(`UPDATE progress SET seconds=?, updated_at=datetime('now') WHERE chave=?`, [segundos, chave]);
+  if (visto !== null)
+    db.run(`UPDATE progress SET done=?, updated_at=datetime('now') WHERE chave=?`, [visto, chave]);
+  return { ok: true };
+}
+
+/** Disciplina inteira de uma vez — uma transação, e não uma requisição por aula. */
+function anotarLote(db: Database, chaves: string[], visto: number) {
+  const validas = chaves.filter((c) => /^(i:\d+|md:.+)$/.test(c));
+  db.transaction(() => {
+    for (const c of validas) anotarProgresso(db, c, null, visto);
+  })();
+  return { ok: true, n: validas.length };
+}
+
+/** Última tela aberta no painel, guardada como JSON numa linha só. */
+function lerEstado(db: Database) {
+  const r = db.query<{ value: string }, [string]>(
+    `SELECT value FROM ui_state WHERE name=?`).get("painel");
+  try { return r ? JSON.parse(r.value) : null; } catch { return null; }
+}
+function gravarEstado(db: Database, valor: string) {
+  db.run(
+    `INSERT INTO ui_state (name, value) VALUES ('painel', ?)
+       ON CONFLICT(name) DO UPDATE SET value=excluded.value`, [valor]);
+  return { ok: true };
+}
+
 /** Estatísticas por disciplina — alimentam a combo e o painel de métricas. */
 function disciplinas(db: Database) {
   const rs = db.query<{ id: number; nome: string; pasta: string | null }, []>(`
@@ -411,8 +455,36 @@ function iniciar(db: Database, porta: number): void {
           sistema: diario.slice(0, 6),
           eventos: db.query(`SELECT at, level, source, message FROM events ORDER BY id DESC LIMIT 120`).all(),
           sync: await estadoSincronizacao(),
+          progresso: progresso(db),
+          estado: lerEstado(db),
         });
       }
+
+      // Progresso e última tela: parâmetros na URL, e não corpo, para o painel
+      // poder mandar a posição final com sendBeacon ao fechar a aba.
+      if (rota === "/api/progresso" && req.method === "POST") {
+        const chave = url.searchParams.get("chave") ?? "";
+        if (!/^(i:\d+|md:.+)$/.test(chave))
+          return Response.json({ ok: false, msg: "chave inválida" }, { status: 400 });
+        const s = url.searchParams.get("segundos");
+        const v = url.searchParams.get("visto");
+        return Response.json(anotarProgresso(
+          db, chave,
+          s === null || !Number.isFinite(Number(s)) ? null : Math.max(0, Number(s)),
+          v === null ? null : (v === "1" ? 1 : 0)));
+      }
+
+      // Lote vai no corpo: são dezenas de chaves, e caminho de escrito é longo
+      // demais para caber com folga numa URL.
+      if (rota === "/api/progresso/lote" && req.method === "POST") {
+        const corpo = await req.json().catch(() => null) as { chaves?: string[]; visto?: boolean } | null;
+        if (!corpo || !Array.isArray(corpo.chaves))
+          return Response.json({ ok: false, msg: "lote inválido" }, { status: 400 });
+        return Response.json(anotarLote(db, corpo.chaves, corpo.visto ? 1 : 0));
+      }
+
+      if (rota === "/api/estado" && req.method === "POST")
+        return Response.json(gravarEstado(db, url.searchParams.get("v") ?? "null"));
 
       if (rota === "/api/sincronizar" && req.method === "POST") {
         return Response.json(sincronizarCopia(db));

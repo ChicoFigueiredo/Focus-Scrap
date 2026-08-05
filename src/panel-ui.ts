@@ -62,6 +62,13 @@ export const PAGINA = `
  .n{color:var(--fraco);font-variant-numeric:tabular-nums;font-size:12px;flex-shrink:0}
  .rotulo{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
  .tag{font-size:10px;color:var(--fraco);flex-shrink:0}
+ .ck{accent-color:var(--ac);width:14px;height:14px;margin:0;cursor:pointer;flex-shrink:0;align-self:center}
+ .tudo{display:flex;gap:8px;align-items:center;padding:8px 10px;margin-bottom:6px;cursor:pointer;
+   border-bottom:1px solid var(--linha);font-size:12.5px;color:var(--fraco)}
+ .tudo:hover{background:var(--realce)}
+ .tudo .rotulo{flex:1}
+ #arvore .item.visto .rotulo{color:var(--fraco)}
+ #arvore .item.on.visto .rotulo{color:#fff}
  .pt{width:7px;height:7px;border-radius:99px;flex-shrink:0;align-self:center}
  .pt.done{background:var(--ok)} .pt.error{background:var(--erro)}
  .pt.pending{background:var(--pend)} .pt.skipped{background:var(--fraco)}
@@ -177,13 +184,21 @@ const haTempo = ms => { if(ms==null) return 'nunca';
   return 'há '+Math.floor(s/3600)+'h'; };
 
 let dados = null, discAtual = null, itemAtual = null, falas = [], vid = null;
-let palco = null, ordem = [];
+let palco = null, ordem = [], prog = {}, restaurou = false;
 
 async function carregar(){
   dados = await (await fetch('/api/tudo')).json();
-  if (discAtual == null || !dados.disciplinas.some(d => d.id === discAtual))
+  prog = dados.progresso || {};
+  // Só na primeira carga: "Atualizar" e o laço de tarefas chamam isto o tempo
+  // todo, e reabrir a última tela a cada volta puxaria a aula debaixo de quem
+  // está assistindo.
+  const reabrir = !restaurou && dados.estado;
+  restaurou = true;
+  if (reabrir) discAtual = dados.estado.disc;
+  if (discAtual !== 'escritos' && (discAtual == null || !dados.disciplinas.some(d => d.id === discAtual)))
     discAtual = dados.disciplinas[0]?.id ?? null;
   pintarCombo(); pintarMetricas(); pintarArvore(); pintarAcoes();
+  if (reabrir) reabrirTela(dados.estado);
   const g = dados.stats.porStatus||{};
   $('#resumo').textContent = (g.pending||g.error)
     ? \`\${g.pending||0} na fila\${g.error?' · '+g.error+' com erro':''}\` : 'acervo completo';
@@ -200,7 +215,71 @@ function pintarCombo(){
 }
 function escolher(id){ discAtual = id === 'escritos' ? 'escritos' : Number(id); itemAtual = null;
   if (discAtual === 'escritos'){ pintarMetricas(); pintarArvore(); abrirMd(); return; }
-  pintarMetricas(); pintarArvore(); $('#conteudo').innerHTML = '<div class="vazio">Escolha uma aula na árvore à esquerda.</div>'; }
+  pintarMetricas(); pintarArvore(); guardarTela();
+  $('#conteudo').innerHTML = '<div class="vazio">Escolha uma aula na árvore à esquerda.</div>'; }
+
+// --- onde eu estava ---------------------------------------------------------
+// A tela aberta e o progresso ficam no banco, e não no navegador: são dados do
+// acervo (viajam na cópia sincronizada do focus.db) e não se perdem quando
+// alguém limpa os dados do site. Preferências de player — velocidade, autoplay,
+// tamanho da legenda — continuam no localStorage: essas são do navegador.
+
+/** Guarda a tela em cartaz. O md é o arquivo, quando a tela é um escrito. */
+function guardarTela(md){
+  const e = {disc: discAtual, item: itemAtual, md: md ?? null};
+  fetch('/api/estado?v=' + encodeURIComponent(JSON.stringify(e)), {method:'POST'}).catch(()=>{});
+}
+/** Reabre o que estava no ar da última vez — sem tocar sozinho. */
+function reabrirTela(e){
+  if (e.md) abrirMd(e.md, e.item);
+  else if (typeof e.item === 'number') abrir(e.item, false);
+  else if (e.disc === 'escritos') abrirMd();
+}
+
+// --- já vi este material ----------------------------------------------------
+// A chave separa o que é item do banco (i:317) do que é arquivo escrito
+// (md:caminho); a tabela progress guarda os dois no mesmo lugar.
+const chaveItem = id => 'i:' + id;
+const visto = ch => !!prog[ch]?.visto;
+function anotar(ch, campos){
+  prog[ch] = Object.assign({segundos:0, visto:false}, prog[ch], campos);
+  const q = ['chave=' + encodeURIComponent(ch)];
+  if (campos.visto != null) q.push('visto=' + (campos.visto ? 1 : 0));
+  if (campos.segundos != null) q.push('segundos=' + campos.segundos.toFixed(1));
+  return '/api/progresso?' + q.join('&');
+}
+/** Clique na caixinha da árvore. */
+function marcar(ch, sim){
+  fetch(anotar(ch, {visto: sim}), {method:'POST'}).catch(()=>{});
+  pintarArvore();
+}
+/** Vista até o fim: marca e volta o ponteiro para o começo. */
+function concluir(id){
+  const u = anotar(chaveItem(id), {visto: true, segundos: 0});
+  fetch(u, {method:'POST'}).catch(()=>{});
+}
+/** Tudo o que a árvore da disciplina em cartaz mostra, na mesma ordem. */
+function chavesDaDisc(){
+  const ks = dados.arvore
+    .filter(r => r.disc_id === discAtual && r.item_id != null).map(r => chaveItem(r.item_id));
+  const tr = disc()?.transcricao;
+  return tr ? ['md:' + tr, ...ks] : ks;
+}
+/** Disciplina inteira num clique — para quem já fechou a matéria. */
+function marcarTudo(sim){
+  const chaves = chavesDaDisc();
+  for (const ch of chaves) prog[ch] = Object.assign({segundos:0, visto:false}, prog[ch], {visto: sim});
+  pintarArvore();
+  fetch('/api/progresso/lote', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({chaves, visto: sim})}).catch(()=>{});
+}
+
+/** A caixinha, igual para item do banco e para escrito. */
+function caixa(ch){
+  return \`<input type="checkbox" class="ck" \${visto(ch)?'checked':''}
+    title="Já passei por este material"
+    onclick="event.stopPropagation();marcar('\${ch.replace(/'/g,"\\\\'")}',this.checked)">\`;
+}
 
 function pintarMetricas(){
   if (discAtual === 'escritos'){
@@ -239,17 +318,34 @@ function pintarArvore(){
   // ordem em que aparece no disco.
   const cap00 = d0?.transcricao
     ? \`<details class="mod" open><summary><span>00 — Materiais Escritos</span><span class="tag">1</span></summary>
-        <div class="item \${itemAtual==='d'+d0.id?'on':''}" onclick="abrirMd('\${d0.transcricao}','d\${d0.id}')">
-          <span class="pt done"></span><span class="n">00.01</span>
+        <div class="item \${itemAtual==='d'+d0.id?'on':''} \${visto('md:'+d0.transcricao)?'visto':''}"
+             onclick="abrirMd('\${d0.transcricao}','d\${d0.id}')">
+          \${caixa('md:'+d0.transcricao)}<span class="pt done"></span><span class="n">00.01</span>
           <span class="rotulo">Transcrição da disciplina</span><span class="tag">md</span></div>
        </details>\`
     : '';
 
-  $('#arvore').innerHTML = cap00 + [...mods.values()].sort((a,b)=>a.pos-b.pos).map(m => {
+  // Marcar a disciplina inteira, para quem já fechou a matéria antes de o
+  // painel existir. Meio marcado vira o traço do indeterminate, que só existe
+  // por JS — não dá para escrever no HTML.
+  const ks = chavesDaDisc(), nv = ks.filter(visto).length;
+  const tudo = ks.length
+    ? \`<label class="tudo" title="Marca ou desmarca tudo desta disciplina">
+         <input type="checkbox" class="ck" id="tudos" \${nv===ks.length?'checked':''}
+           onchange="marcarTudo(this.checked)">
+         <span class="rotulo">Disciplina inteira</span>
+         <span class="tag">✓ \${nv}/\${ks.length}</span></label>\`
+    : '';
+
+  $('#arvore').innerHTML = tudo + cap00 + [...mods.values()].sort((a,b)=>a.pos-b.pos).map(m => {
     const ok = m.itens.filter(i=>i.download_status==='done').length;
+    const vi = m.itens.filter(i=>visto(chaveItem(i.item_id))).length;
     return \`<details class="mod" open>
-      <summary><span>\${dd(m.pos)} — \${esc(m.nome)}</span><span class="tag">\${ok}/\${m.itens.length}</span></summary>
-      \${m.itens.map(i => \`<div class="item \${i.item_id===itemAtual?'on':''}" onclick="abrir(\${i.item_id})">
+      <summary><span>\${dd(m.pos)} — \${esc(m.nome)}</span>
+        <span class="tag">✓ \${vi}/\${m.itens.length} · \${ok} no disco</span></summary>
+      \${m.itens.map(i => \`<div class="item \${i.item_id===itemAtual?'on':''} \${visto(chaveItem(i.item_id))?'visto':''}"
+             onclick="abrir(\${i.item_id})">
+          \${caixa(chaveItem(i.item_id))}
           <span class="pt \${i.download_status}"></span>
           <span class="n">\${dd(m.pos)}.\${dd(i.position)}</span>
           <span class="rotulo" title="\${esc(i.title)}">\${esc(i.title)}</span>
@@ -257,6 +353,9 @@ function pintarArvore(){
         </div>\`).join('')}
     </details>\`;
   }).join('') || '<div class="vazio" style="padding:30px">Nada catalogado nesta disciplina.</div>';
+
+  const cx = $('#tudos');
+  if (cx) cx.indeterminate = nv > 0 && nv < ks.length;
 }
 
 function pintarArvoreEscritos(){
@@ -267,18 +366,24 @@ function pintarArvoreEscritos(){
     porDisc.get(r.disc_id).itens.push(r);
   }
   $('#arvore').innerHTML =
-    \`<div class="item \${itemAtual==='ix'?'on':''}" onclick="abrirMd()">
-        <span class="pt done"></span><span class="rotulo">Índice dos escritos</span><span class="tag">md</span></div>
-     <div class="item \${itemAtual==='tr'?'on':''}" onclick="abrirMd('\${TRANSC}')">
-        <span class="pt done"></span><span class="rotulo">Transcrição Geral</span><span class="tag">md</span></div>\`
+    \`<div class="item \${itemAtual==='ix'?'on':''} \${visto('md:indice')?'visto':''}" onclick="abrirMd()">
+        \${caixa('md:indice')}<span class="pt done"></span>
+        <span class="rotulo">Índice dos escritos</span><span class="tag">md</span></div>
+     <div class="item \${itemAtual==='tr'?'on':''} \${visto('md:'+TRANSC)?'visto':''}" onclick="abrirMd('\${TRANSC}')">
+        \${caixa('md:'+TRANSC)}<span class="pt done"></span>
+        <span class="rotulo">Transcrição Geral</span><span class="tag">md</span></div>\`
     + [...porDisc.values()].sort((a,b)=>a.pos-b.pos).map(d =>
       \`<details class="mod" open><summary><span>\${dd(d.pos)} — \${esc(d.nome)}</span>
          <span class="tag">\${d.itens.length}</span></summary>
         \${(dados.disciplinas.find(x=>x.id===d.id)?.transcricao
-            ? \`<div class="item \${itemAtual==='d'+d.id?'on':''}" onclick="abrirMd('\${dados.disciplinas.find(x=>x.id===d.id).transcricao}','d\${d.id}')">
-                 <span class="pt done"></span><span class="n">00</span>
-                 <span class="rotulo">Transcrição da disciplina</span><span class="tag">md</span></div>\` : '')}
-        \${d.itens.map(i => \`<div class="item \${i.item_id===itemAtual?'on':''}" onclick="abrir(\${i.item_id})">
+            ? (tr => \`<div class="item \${itemAtual==='d'+d.id?'on':''} \${visto('md:'+tr)?'visto':''}"
+                          onclick="abrirMd('\${tr}','d\${d.id}')">
+                 \${caixa('md:'+tr)}<span class="pt done"></span><span class="n">00</span>
+                 <span class="rotulo">Transcrição da disciplina</span><span class="tag">md</span></div>\`
+              )(dados.disciplinas.find(x=>x.id===d.id).transcricao) : '')}
+        \${d.itens.map(i => \`<div class="item \${i.item_id===itemAtual?'on':''} \${visto(chaveItem(i.item_id))?'visto':''}"
+              onclick="abrir(\${i.item_id})">
+            \${caixa(chaveItem(i.item_id))}
             <span class="pt done"></span><span class="n">\${dd(i.mod_pos)}.\${dd(i.position)}</span>
             <span class="rotulo" title="\${esc(i.mod_nome)}">\${esc(i.mod_nome)}</span>
             <span class="tag">\${i.kind}</span></div>\`).join('')}
@@ -287,7 +392,9 @@ function pintarArvoreEscritos(){
 
 const TRANSC = 'Transcrição.Geral.md';
 async function abrirMd(arquivo, marca){
+  salvarPos(true);
   itemAtual = marca ?? (arquivo ? 'tr' : 'ix');
+  guardarTela(arquivo);
   if (discAtual === 'escritos') pintarArvoreEscritos(); else pintarArvore();
   const cx = $('#conteudo');
   cx.innerHTML = '<div class="vazio">carregando…</div>';
@@ -351,7 +458,10 @@ async function copiarCaminho(botao){
 }
 
 async function abrir(id, tocar){
-  itemAtual = id; pintarArvore();
+  // Antes de trocar: onde o vídeo que sai parou. Depois de trocar o itemAtual a
+  // posição cairia na aula errada.
+  salvarPos(true);
+  itemAtual = id; guardarTela(); pintarArvore();
   $('#arvore .item.on')?.scrollIntoView({block:'nearest'});
   const r = dados.arvore.find(x => x.item_id === id);
   if(!r) return;
@@ -415,10 +525,15 @@ function montarPalco(){
     // A faixa precisa ser ligada no JS: o atributo default sozinho nem sempre
     // exibe a legenda. (Sem crases neste arquivo: encerram o template literal.)
     for (const t of vid.textTracks) t.mode = 'showing';
+    // Retoma de onde parou. Só depois do metadata, porque antes disso não há
+    // duração e o currentTime não gruda. Perto do fim recomeça do zero: quem
+    // parou nos créditos não quer voltar para os créditos.
+    if (aRetomar > 1 && aRetomar < vid.duration - 15) vid.currentTime = aRetomar;
+    aRetomar = 0;
   });
-  vid.addEventListener('timeupdate', destacar);
+  vid.addEventListener('timeupdate', () => { destacar(); salvarPos(false); });
   vid.addEventListener('play',  () => palco.classList.remove('parado'));
-  vid.addEventListener('pause', () => palco.classList.add('parado'));
+  vid.addEventListener('pause', () => { palco.classList.add('parado'); salvarPos(true); });
   // Velocidade trocada pelo menu nativo do player também é guardada.
   vid.addEventListener('ratechange', () => {
     vid.defaultPlaybackRate = vid.playbackRate;
@@ -428,7 +543,13 @@ function montarPalco(){
   // Autoplay: emenda na próxima aula quando esta termina. Só o fim natural
   // dispara 'ended' — trocar de aula no meio, não. Em tela cheia continua em
   // tela cheia, porque quem está em tela cheia é o palco, não o vídeo.
-  vid.addEventListener('ended', () => { if (autoplay()) irVizinho(1); });
+  //
+  // A marca de "já vi" vai ANTES de pular: assistir até o fim é o que fecha a
+  // aula, e depois do pulo o itemAtual já é o da aula seguinte.
+  vid.addEventListener('ended', () => {
+    concluir(itemAtual);
+    if (autoplay()) irVizinho(1); else pintarArvore();
+  });
   palco.addEventListener('mousemove', mexeu);
   mostrarAuto(); aplicarLeg();
 }
@@ -445,6 +566,7 @@ async function carregarVideo(r, tocar){
   Object.assign(faixa, {kind:'subtitles', srclang:'pt', label:'Português',
     src:'/legenda/'+id, default:true});
   vid.appendChild(faixa);
+  aRetomar = prog[chaveItem(id)]?.segundos ?? 0;
   vid.load();
   // Depois do load(): ele redefine playbackRate a partir de defaultPlaybackRate.
   definirVel(velocidade());
@@ -495,6 +617,27 @@ function irVizinho(passo){
   const alvo = i < 0 ? null : ordem[i+passo];
   if (alvo) abrir(alvo.item_id, true);
 }
+
+// --- onde a aula parou ------------------------------------------------------
+// Guardo de tempos em tempos, e não a cada quadro: o 'timeupdate' dispara umas
+// quatro vezes por segundo, e gravar tudo isso seria escrever no banco à toa.
+let aRetomar = 0, ultimaGravacao = 0;
+function salvarPos(agora){
+  if (!vid || typeof itemAtual !== 'number') return;
+  const t = vid.currentTime;
+  if (!isFinite(t) || t < 1) return;
+  // No fim quem manda é o 'ended', que zera o ponteiro e marca a aula. Sem esta
+  // guarda o último 'timeupdate' (ou o 'pause' de alguns navegadores) chegaria
+  // depois e regravaria a posição final por cima do zero.
+  if (vid.ended || (isFinite(vid.duration) && t > vid.duration - 1)) return;
+  if (!agora && Date.now() - ultimaGravacao < 5000) return;
+  ultimaGravacao = Date.now();
+  const u = anotar(chaveItem(itemAtual), {segundos: t});
+  // Ao fechar a aba o fetch normal é cortado no meio; o beacon sobrevive.
+  if (agora && navigator.sendBeacon) navigator.sendBeacon(u);
+  else fetch(u, {method:'POST'}).catch(()=>{});
+}
+addEventListener('pagehide', () => salvarPos(true));
 
 /** Controles somem sozinhos enquanto o vídeo roda e o mouse está quieto. */
 let sumico;
