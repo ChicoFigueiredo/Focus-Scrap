@@ -1,0 +1,25 @@
+# OPCIONAL — este não está instalado. Serve para o painel subir junto com o WSL,
+# em vez de depender de você abrir um terminal e rodar `bun run panel`.
+#
+#   cp infra/remote/focus-painel.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now focus-painel
+#
+# Com ele ligado, PC ligado já basta para o tablet enxergar o painel. Sem ele,
+# o endereço público responde 502 até você iniciar o painel na mão.
+#
+# A porta não aparece aqui de propósito: o bun lê o .env do WorkingDirectory, e
+# lá está FOCUS_PANEL_PORT=17788 — o mesmo número que o túnel usa. Um lugar só
+# para a porta é o que impede os dois lados de saírem de sincronia.
+
+[Unit]
+Description=Painel do focus-scrap
+After=network-online.target
+
+[Service]
+WorkingDirectory=/mnt/d/Chico/focus-scrap
+ExecStart=/home/chico/.bun/bin/bun run src/cli.ts panel
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target
