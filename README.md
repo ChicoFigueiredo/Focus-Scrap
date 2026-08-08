@@ -295,6 +295,88 @@ bun run test                           # bun test
 
 Todo comando aceita `--enrollment <id>` (padrão `28859`).
 
+## Progresso, anotações e sincronização
+
+Marcação de aula vista, posição do vídeo, anotações e preferências do player
+ficam **no banco**, não no navegador. Como todo aparelho fala com o mesmo
+painel, o tablet e o PC veem a mesma coisa — e como isso viaja na cópia
+sincronizada do `focus.db`, também não se perde ao limpar os dados do site.
+
+| Tabela | O quê | Chave |
+|---|---|---|
+| `progress` | posição do vídeo e "já vi" | `i:<id>` ou `md:<caminho>` |
+| `notes` | anotações de quem estuda | a mesma |
+| `prefs` | velocidade, autoplay, tamanho da legenda | nome da preferência |
+| `ui_state` | última tela aberta | — |
+
+Vídeo e material escrito usam o mesmo esquema de chave, então os dois ganham
+caixinha e campo de anotação sem esquema separado.
+
+**Nada vai direto para a rede.** Toda escrita entra numa fila no `localStorage`,
+a tela muda na hora, e a fila só encolhe quando o servidor confirma — um POST
+perdido numa piscada do túnel deixa de custar a marcação. O cabeçalho mostra
+`⇅ N por enviar` enquanto houver pendência. Reenviar o mesmo lote é inofensivo:
+toda operação é "deixe assim", nunca "some mais um".
+
+Um endpoint só, `POST /api/sync`, empurra a fila e devolve o estado fresco. A
+aba repuxa ao voltar para o foco, quando a rede volta e a cada 30s — então você
+marca no tablet, pega o PC, e a árvore já está certa sem recarregar nada.
+
+Conflito entre aparelhos resolve por chegada: **a última gravação vence**. Para
+uma pessoa com dois aparelhos isso acerta quase sempre; o campo de anotação em
+foco nunca é sobrescrito por baixo de quem está digitando.
+
+## Assistir de fora de casa
+
+**https://focus.chicofigueiredo.com.br** — usuário `chico`, senha guardada no
+`.htpasswd` do droplet. Serve para assistir do tablet, de qualquer rede.
+
+O painel continua rodando **só aqui**, em `127.0.0.1:17788`. Nada é copiado para
+o servidor: o vídeo sai do disco de casa na hora em que você aperta play. O que
+existe lá fora é um cano.
+
+```
+tablet ──HTTPS──▶ nginx no droplet ──▶ 127.0.0.1:17788 (ponta do túnel)
+                  (senha, TLS)               ▲
+                                             │ túnel SSH reverso
+                        WSL ── ssh -R ───────┘   (focus-tunel.service)
+                         │
+                         └─ painel em 127.0.0.1:17788 ── acervo em /mnt/e
+```
+
+Quem inicia a conexão é o PC de casa, saindo pela porta 22. Não há porta aberta
+no roteador e não há IP fixo para manter — por isso funciona atrás do NAT da
+operadora.
+
+**A porta é fixa.** O túnel é um par de portas combinado de antemão, e o nginx
+lá fora faz proxy para a `17788`. Painel em outra porta = 502 no tablet. Por
+isso o `.env` traz `FOCUS_PANEL_PORT=17788`: com ele, `bun run panel` — sem flag
+nenhuma — já abre na porta certa. O que ainda pode acontecer é a `17788` estar
+ocupada; aí o painel **pula para a 17789 e avisa só no terminal**, e o remoto
+cai. `infra/remote/verificar.sh` detecta exatamente esse caso.
+
+**Diagnóstico e reprodução ficam em [`infra/remote/`](infra/remote/README.md)** —
+os quatro scripts que refazem tudo do zero, o `verificar.sh` que confere a
+corrente elo por elo, e o porquê de cada decisão.
+
+```bash
+infra/remote/verificar.sh              # o tablet não abre — onde quebrou?
+systemctl --user status focus-tunel
+```
+
+| Onde | O quê |
+|---|---|
+| DNS | `*.chicofigueiredo.com.br` → `167.99.225.233` (nameservers na DigitalOcean, não no registro.br) |
+| Droplet | usuário `tunel`, sem shell, chave restrita a encaminhar só a 17788 |
+| Droplet | site do nginx + senha bcrypt + cert do certbot |
+| WSL | `~/.ssh/focus_tunel`, e o `focus-tunel.service` de usuário |
+
+**O que NÃO dá para fazer de fora:** `/api/run`, `/api/requeue`, `/api/revelar`,
+`/api/abrir` e `/api/sincronizar` respondem 403 no nginx. Do tablet dá para
+assistir, ler transcrição e marcar aula como vista; disparar scrape ou abrir
+arquivo no Explorer, não. Se a senha vazar, o estrago é alguém ver o acervo —
+não rodar processo nesta máquina.
+
 ## Configuração (`.env`)
 
 `.env` é lido pelos dois lados (TS via `process.env` do Bun, Python via

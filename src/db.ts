@@ -116,6 +116,24 @@ CREATE TABLE IF NOT EXISTS ui_state (
   name  TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+
+-- Anotações de quem estuda, uma por material. Mesma chave do progress, então
+-- vídeo e material escrito ganham anotação sem esquema separado. Linha vazia
+-- não existe: apagar o texto apaga a linha.
+CREATE TABLE IF NOT EXISTS notes (
+  chave      TEXT PRIMARY KEY,
+  texto      TEXT NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Preferências do player que seguem a pessoa, e não o aparelho: velocidade,
+-- autoplay, tamanho da legenda. O navegador continua guardando cópia no
+-- localStorage — isto aqui é a versão que atravessa de um aparelho para o outro.
+CREATE TABLE IF NOT EXISTS prefs (
+  nome       TEXT PRIMARY KEY,
+  valor      TEXT NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 `;
 
 export function connect(path: string = DB_PATH): Database {
@@ -295,4 +313,133 @@ export function salvarPadrao(
      ON CONFLICT(signature) DO UPDATE SET value=excluded.value, model=excluded.model`,
     [signature, kind, JSON.stringify(value), model],
   );
+}
+
+// --- Sincronização entre aparelhos ------------------------------------------
+//
+// O painel é um servidor só, na máquina de casa, e todo aparelho fala com ele
+// — o que já bastava para as marcações não divergirem. O que não bastava era a
+// rede: um POST perdido numa piscada do túnel sumia em silêncio. Por isso a
+// escrita virou fila: o navegador enfileira, manda o lote inteiro aqui, e só
+// tira da fila o que o servidor confirmou. Reenviar o mesmo lote é inofensivo,
+// que é o que permite tentar de novo sem pensar.
+//
+// Conflito entre aparelhos resolve por chegada: a última gravação vence. Para
+// uma pessoa com um tablet e um PC isso é o certo quase sempre, e o painel
+// repuxa o estado ao voltar para o foco, então as duas telas convergem sozinhas.
+
+/** Material: item do banco (`i:317`) ou arquivo escrito (`md:<caminho>`). */
+const CHAVE_VALIDA = /^(i:\d+|md:.+)$/;
+
+/** Lista fechada: preferência fora dela não entra no banco. */
+const PREFS_VALIDAS = new Set(["velocidade", "autoplay", "legenda"]);
+
+export interface OpSync {
+  t: "progresso" | "lote" | "nota" | "pref" | "tela";
+  chave?: string;
+  chaves?: string[];
+  segundos?: number | null;
+  visto?: boolean | null;
+  texto?: string;
+  nome?: string;
+  valor?: string;
+}
+
+function anotarUma(db: Database, chave: string, segundos: number | null, visto: number | null): void {
+  db.run(`INSERT INTO progress (chave) VALUES (?) ON CONFLICT(chave) DO NOTHING`, [chave]);
+  if (segundos !== null)
+    db.run(`UPDATE progress SET seconds=?, updated_at=datetime('now') WHERE chave=?`, [segundos, chave]);
+  if (visto !== null)
+    db.run(`UPDATE progress SET done=?, updated_at=datetime('now') WHERE chave=?`, [visto, chave]);
+}
+
+/** Aplica uma operação. `false` quer dizer "não reconheci" — o lote segue. */
+function aplicarUma(db: Database, op: OpSync): boolean {
+  switch (op?.t) {
+    case "progresso": {
+      if (!op.chave || !CHAVE_VALIDA.test(op.chave)) return false;
+      const seg = op.segundos == null ? null : Math.max(0, Number(op.segundos));
+      if (seg !== null && !Number.isFinite(seg)) return false;
+      anotarUma(db, op.chave, seg, op.visto == null ? null : op.visto ? 1 : 0);
+      return true;
+    }
+    case "lote": {
+      const validas = (op.chaves ?? []).filter((c) => CHAVE_VALIDA.test(c));
+      if (!validas.length) return false;
+      for (const c of validas) anotarUma(db, c, null, op.visto ? 1 : 0);
+      return true;
+    }
+    case "nota": {
+      if (!op.chave || !CHAVE_VALIDA.test(op.chave)) return false;
+      const texto = (op.texto ?? "").trim();
+      if (!texto) db.run(`DELETE FROM notes WHERE chave=?`, [op.chave]);
+      else
+        db.run(
+          `INSERT INTO notes (chave, texto) VALUES (?, ?)
+           ON CONFLICT(chave) DO UPDATE SET texto=excluded.texto, updated_at=datetime('now')`,
+          [op.chave, texto],
+        );
+      return true;
+    }
+    case "pref": {
+      if (!op.nome || !PREFS_VALIDAS.has(op.nome) || op.valor == null) return false;
+      db.run(
+        `INSERT INTO prefs (nome, valor) VALUES (?, ?)
+         ON CONFLICT(nome) DO UPDATE SET valor=excluded.valor, updated_at=datetime('now')`,
+        [op.nome, String(op.valor)],
+      );
+      return true;
+    }
+    case "tela": {
+      if (op.valor == null) return false;
+      db.run(
+        `INSERT INTO ui_state (name, value) VALUES ('painel', ?)
+         ON CONFLICT(name) DO UPDATE SET value=excluded.value`, [String(op.valor)]);
+      return true;
+    }
+    default:
+      return false;
+  }
+}
+
+/**
+ * Aplica a fila que o navegador mandou, na ordem em que ela veio.
+ *
+ * Uma operação torta não derruba o lote: ela é contada como ignorada e as
+ * outras seguem. É o que impede uma linha estragada no localStorage de travar
+ * a sincronização para sempre.
+ */
+export function aplicarSync(db: Database, ops: OpSync[]): { aplicadas: number; ignoradas: number } {
+  let aplicadas = 0;
+  let ignoradas = 0;
+  db.transaction(() => {
+    for (const op of ops ?? []) {
+      let ok = false;
+      try {
+        ok = aplicarUma(db, op);
+      } catch {
+        ok = false;
+      }
+      if (ok) aplicadas++;
+      else ignoradas++;
+    }
+  })();
+  return { aplicadas, ignoradas };
+}
+
+/** Progresso inteiro de uma vez: é uma linha por material já tocado. */
+export function lerProgresso(db: Database): Record<string, { segundos: number; visto: boolean }> {
+  const rs = db.query<{ chave: string; seconds: number; done: number }, []>(
+    `SELECT chave, seconds, done FROM progress`).all();
+  return Object.fromEntries(rs.map((r) => [r.chave, { segundos: r.seconds, visto: !!r.done }]));
+}
+
+export function lerNotas(db: Database): Record<string, string> {
+  const rs = db.query<{ chave: string; texto: string }, []>(`SELECT chave, texto FROM notes`).all();
+  return Object.fromEntries(rs.map((r) => [r.chave, r.texto]));
+}
+
+export function lerPrefs(db: Database): Record<string, string> {
+  const rs = db.query<{ nome: string; valor: string }, []>(`SELECT nome, valor FROM prefs`).all();
+  return Object.fromEntries(rs.map((r) => [r.nome, r.valor]));
 }

@@ -104,12 +104,19 @@ export const PAGINA = `
  .hud .rot{min-width:0;max-width:44%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
  .hud #fs{margin-left:auto}
 
- /* A legenda nativa é dimensionada em porcentagem da ALTURA DO VÍDEO: em tela
-    cheia ela dobra de tamanho sozinha. Fixar em px desliga essa proporção — o
-    texto fica do mesmo tamanho na janela e em tela cheia. O tamanho em si é
-    escolhido por quem assiste (chip "Aa"), e a regra vai num <style> próprio,
-    reescrito pelo JS, porque ::cue não enxerga variável CSS no Chrome. */
- video::cue{line-height:1.35;background:#000b}
+ /* A legenda é desenhada AQUI, e não pelo navegador. Estilizar a legenda nativa
+    (video::cue) não funciona de verdade: as preferências de legenda do sistema
+    e do navegador — tamanho, cor, fundo — entram por cima da regra da página,
+    e aí o chip "Aa" trocava a regra e nada mudava na tela. Sendo uma div comum,
+    o tamanho é exatamente o escolhido, e em px justamente para NÃO acompanhar a
+    altura do vídeo: o mesmo tamanho na janela e em tela cheia. */
+ .legenda{position:absolute;left:0;right:0;bottom:58px;padding:0 5%;text-align:center;
+   pointer-events:none;font-size:var(--tamleg,18px);line-height:1.35}
+ .legenda:empty{display:none}
+ /* Uma caixa só para a fala inteira, e não uma por linha: com fundo por linha
+    as emendas aparecem como listras entre elas. */
+ .legenda>span{display:inline-block;background:#000b;color:#fff;border-radius:6px;
+   padding:.18em .5em;text-shadow:0 1px 2px #000}
  h2.tit{font-size:17px;margin:14px 0 4px;font-weight:650}
  .meta{color:var(--fraco);font-size:12.5px;margin-bottom:16px;display:flex;gap:14px;flex-wrap:wrap}
  .arquivo{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:10px 0 16px}
@@ -128,6 +135,15 @@ export const PAGINA = `
  .fala.on{background:var(--realce);box-shadow:inset 3px 0 0 var(--ac)}
  .fala time{color:var(--fraco);font-variant-numeric:tabular-nums;font-size:12px;flex-shrink:0;min-width:46px}
  .corrido{padding:14px;white-space:pre-wrap;line-height:1.75}
+
+ .anot{background:var(--card);border:1px solid var(--linha);border-radius:10px;
+   overflow:hidden;margin-top:14px}
+ .anot>header{padding:10px 14px;border-bottom:1px solid var(--linha);display:flex;
+   gap:10px;align-items:center;justify-content:space-between}
+ .anot h3{margin:0;font-size:12px;text-transform:uppercase;letter-spacing:.4px;color:var(--fraco)}
+ .anot textarea{width:100%;border:0;background:transparent;color:var(--txt);
+   font:inherit;line-height:1.7;padding:12px 14px;resize:vertical;min-height:88px;display:block}
+ .anot textarea:focus{outline:0;background:var(--realce)}
  .md{max-width:78ch;line-height:1.75}
  .md h1{font-size:22px;margin:26px 0 10px;font-weight:680;letter-spacing:-.01em}
  .md h2{font-size:17px;margin:24px 0 8px;font-weight:650;color:var(--ac)}
@@ -150,12 +166,12 @@ export const PAGINA = `
  ul.ev li{padding:4px 0;border-top:1px solid var(--linha);color:var(--fraco)}
  .erro{color:var(--erro)}
 </style>
-<style id="estcue"></style>
 
 <header>
   <h1>focus-scrap</h1>
   <select id="combo" onchange="escolher(this.value)"></select>
   <span style="flex:1"></span>
+  <span class="tag" id="fila" style="color:var(--pend)"></span>
   <span class="tag" id="resumo"></span>
   <button class="sec" onclick="carregar()">Atualizar</button>
 </header>
@@ -184,11 +200,17 @@ const haTempo = ms => { if(ms==null) return 'nunca';
   return 'há '+Math.floor(s/3600)+'h'; };
 
 let dados = null, discAtual = null, itemAtual = null, falas = [], vid = null;
-let palco = null, ordem = [], prog = {}, restaurou = false;
+let palco = null, ordem = [], prog = {}, notas = {}, prefs = {}, restaurou = false;
 
 async function carregar(){
   dados = await (await fetch('/api/tudo')).json();
   prog = dados.progresso || {};
+  notas = dados.notas || {};
+  prefs = dados.prefs || {};
+  // O que estava na fila de uma sessão anterior continua valendo por cima do
+  // que o servidor mandou, e vai embora no primeiro empurrão.
+  for (const op of fila) aplicarLocal(op);
+  aplicarPrefs();
   // Só na primeira carga: "Atualizar" e o laço de tarefas chamam isto o tempo
   // todo, e reabrir a última tela a cada volta puxaria a aula debaixo de quem
   // está assistindo.
@@ -224,10 +246,111 @@ function escolher(id){ discAtual = id === 'escritos' ? 'escritos' : Number(id); 
 // alguém limpa os dados do site. Preferências de player — velocidade, autoplay,
 // tamanho da legenda — continuam no localStorage: essas são do navegador.
 
+// --- fila de sincronização --------------------------------------------------
+//
+// Nenhuma escrita vai direto para a rede. Ela entra numa fila no localStorage,
+// o estado da tela muda na hora (ninguém espera o servidor para ver a caixinha
+// marcar), e a fila só encolhe quando o servidor confirma. Uma piscada do túnel
+// deixa de custar a marcação: ela fica na fila e vai no próximo empurrão.
+//
+// O mesmo endpoint empurra e puxa. A resposta traz progresso, notas e
+// preferências frescos, então sincronizar já é ficar em dia com o outro
+// aparelho — e é por isso que dá para chamar de tempos em tempos sem inventar
+// uma segunda rota só de leitura.
+const CHAVE_FILA = 'focus.fila';
+let fila = [];
+let sincronizando = false;
+
+function lerFila(){
+  try { const f = JSON.parse(localStorage.getItem(CHAVE_FILA)); return Array.isArray(f) ? f : []; }
+  catch { return []; }
+}
+function gravarFila(){
+  try { localStorage.setItem(CHAVE_FILA, JSON.stringify(fila)); } catch {}
+}
+
+/** Muda o estado local do jeito que o servidor mudaria — para a tela não esperar. */
+function aplicarLocal(op){
+  if (op.t === 'progresso'){
+    const c = {};
+    if (op.segundos != null) c.segundos = op.segundos;
+    if (op.visto != null) c.visto = op.visto;
+    prog[op.chave] = Object.assign({segundos:0, visto:false}, prog[op.chave], c);
+  } else if (op.t === 'lote'){
+    for (const ch of op.chaves)
+      prog[ch] = Object.assign({segundos:0, visto:false}, prog[ch], {visto: op.visto});
+  } else if (op.t === 'nota'){
+    if (op.texto.trim()) notas[op.chave] = op.texto; else delete notas[op.chave];
+  } else if (op.t === 'pref'){
+    prefs[op.nome] = op.valor;
+  }
+}
+
+function enfileirar(op){
+  fila.push(op);
+  gravarFila();
+  aplicarLocal(op);
+  pintarFila();
+  sincronizarFila();
+}
+
+/**
+ * Manda a fila e recebe o estado fresco. Com 'puxar', vai mesmo sem fila —
+ * é assim que a aba se atualiza ao voltar para o foco.
+ */
+async function sincronizarFila(puxar){
+  if (sincronizando || (!fila.length && !puxar)) return;
+  sincronizando = true;
+  const enviadas = fila.length;
+  try {
+    const r = await fetch('/api/sync', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ops: fila.slice(0, enviadas)})});
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const j = await r.json();
+    // Só o que foi enviado sai da fila: o que entrou durante a viagem fica.
+    fila = fila.slice(enviadas);
+    gravarFila();
+    absorver(j);
+  } catch {
+    // Fica tudo na fila. O próximo gatilho — foco, rede voltando, o laço de
+    // 30s — tenta de novo. Não há o que fazer aqui além de não perder nada.
+  } finally {
+    sincronizando = false;
+    pintarFila();
+  }
+}
+
+/**
+ * Assume o que o servidor mandou e recoloca por cima o que ainda não foi
+ * confirmado. Sem esse "por cima", uma marcação feita durante a viagem seria
+ * desfeita na tela por um estado que ainda não a conhecia.
+ */
+function absorver(j){
+  if (!j || !j.progresso) return;
+  const antes = JSON.stringify([prog, notas, prefs]);
+  prog = j.progresso; notas = j.notas || {}; prefs = j.prefs || {};
+  for (const op of fila) aplicarLocal(op);
+  if (JSON.stringify([prog, notas, prefs]) === antes) return;
+  // Só repinta quando algo mudou de fato: repintar a árvore reabre os módulos
+  // que a pessoa fechou, e fazer isso a cada 30s por nada seria um estorvo.
+  aplicarPrefs();
+  pintarNota();
+  if (discAtual === 'escritos') pintarArvoreEscritos(); else pintarArvore();
+}
+
+/** Aviso discreto de que ainda há coisa por enviar. */
+function pintarFila(){
+  const el = $('#fila');
+  if (!el) return;
+  el.textContent = fila.length ? '⇅ ' + fila.length + ' por enviar' : '';
+  el.title = fila.length
+    ? 'Marcações e anotações ainda não confirmadas pelo servidor. Vão sozinhas quando a conexão voltar.'
+    : '';
+}
+
 /** Guarda a tela em cartaz. O md é o arquivo, quando a tela é um escrito. */
 function guardarTela(md){
-  const e = {disc: discAtual, item: itemAtual, md: md ?? null};
-  fetch('/api/estado?v=' + encodeURIComponent(JSON.stringify(e)), {method:'POST'}).catch(()=>{});
+  enfileirar({t:'tela', valor: JSON.stringify({disc: discAtual, item: itemAtual, md: md ?? null})});
 }
 /** Reabre o que estava no ar da última vez — sem tocar sozinho. */
 function reabrirTela(e){
@@ -241,22 +364,15 @@ function reabrirTela(e){
 // (md:caminho); a tabela progress guarda os dois no mesmo lugar.
 const chaveItem = id => 'i:' + id;
 const visto = ch => !!prog[ch]?.visto;
-function anotar(ch, campos){
-  prog[ch] = Object.assign({segundos:0, visto:false}, prog[ch], campos);
-  const q = ['chave=' + encodeURIComponent(ch)];
-  if (campos.visto != null) q.push('visto=' + (campos.visto ? 1 : 0));
-  if (campos.segundos != null) q.push('segundos=' + campos.segundos.toFixed(1));
-  return '/api/progresso?' + q.join('&');
-}
+
 /** Clique na caixinha da árvore. */
 function marcar(ch, sim){
-  fetch(anotar(ch, {visto: sim}), {method:'POST'}).catch(()=>{});
+  enfileirar({t:'progresso', chave: ch, visto: sim});
   pintarArvore();
 }
 /** Vista até o fim: marca e volta o ponteiro para o começo. */
 function concluir(id){
-  const u = anotar(chaveItem(id), {visto: true, segundos: 0});
-  fetch(u, {method:'POST'}).catch(()=>{});
+  enfileirar({t:'progresso', chave: chaveItem(id), visto: true, segundos: 0});
 }
 /** Tudo o que a árvore da disciplina em cartaz mostra, na mesma ordem. */
 function chavesDaDisc(){
@@ -267,11 +383,63 @@ function chavesDaDisc(){
 }
 /** Disciplina inteira num clique — para quem já fechou a matéria. */
 function marcarTudo(sim){
-  const chaves = chavesDaDisc();
-  for (const ch of chaves) prog[ch] = Object.assign({segundos:0, visto:false}, prog[ch], {visto: sim});
+  enfileirar({t:'lote', chaves: chavesDaDisc(), visto: sim});
   pintarArvore();
-  fetch('/api/progresso/lote', {method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({chaves, visto: sim})}).catch(()=>{});
+}
+
+// --- anotações --------------------------------------------------------------
+// Mesma chave do progresso, então aula em vídeo e material escrito têm o mesmo
+// campo. Grava sozinho: quem estuda anota e troca de tela, não aperta "salvar".
+let chaveNota = null, temporizadorNota = null;
+
+/**
+ * Troca a aula a que a anotação pertence. Grava a anterior ANTES de trocar a
+ * chave — senão o texto de uma aula seria gravado na conta da seguinte.
+ */
+function trocarNota(ch){
+  guardarNota(true);
+  chaveNota = ch;
+  const el = $('#nota');
+  if (el) el.value = notas[ch] || '';
+  const e = $('#notaest');
+  if (e) e.textContent = '';
+}
+
+function blocoNota(ch){
+  chaveNota = ch;
+  return \`<div class="anot">
+    <header><h3>Minhas anotações</h3><span class="tag" id="notaest"></span></header>
+    <textarea id="nota" rows="4" spellcheck="true"
+      placeholder="O que você quer lembrar desta aula…"
+      oninput="notaMudou()" onblur="guardarNota(true)">\${esc(notas[ch] || '')}</textarea>
+  </div>\`;
+}
+
+/** Repõe o texto do servidor — sem atropelar quem está digitando agora. */
+function pintarNota(){
+  const el = $('#nota');
+  if (!el || !chaveNota) return;
+  if (document.activeElement === el) return;
+  const doServidor = notas[chaveNota] || '';
+  if (el.value !== doServidor) el.value = doServidor;
+}
+
+function notaMudou(){
+  $('#notaest').textContent = 'digitando…';
+  clearTimeout(temporizadorNota);
+  temporizadorNota = setTimeout(guardarNota, 800);
+}
+
+/** Enfileira o texto se ele mudou. 'agora' cancela a espera da digitação. */
+function guardarNota(agora){
+  if (agora) clearTimeout(temporizadorNota);
+  const el = $('#nota');
+  if (!el || !chaveNota) return;
+  const texto = el.value;
+  if (texto === (notas[chaveNota] || '')) { $('#notaest').textContent = ''; return; }
+  enfileirar({t:'nota', chave: chaveNota, texto});
+  $('#notaest').textContent = 'guardada';
+  setTimeout(() => { const e = $('#notaest'); if (e && e.textContent === 'guardada') e.textContent = ''; }, 1500);
 }
 
 /** A caixinha, igual para item do banco e para escrito. */
@@ -402,7 +570,8 @@ async function abrirMd(arquivo, marca){
   if (!r.ok){ cx.innerHTML = '<div class="vazio">Ainda não gerado. Use <b>Gerar Materiais Escritos</b> nas Ações.</div>'; return; }
   const j = await r.json();
   const alvo = arquivo ?? '00-Materiais.Escritos.md';
-  cx.innerHTML = barraArquivo({p: alvo}) + '<div class="md">'+j.html+'</div>';
+  cx.innerHTML = barraArquivo({p: alvo}) + '<div class="md">'+j.html+'</div>'
+    + blocoNota('md:' + alvo);
   cx.scrollTop = 0;
   carregarCaminho({p: alvo});
   // Link para PDF abre no painel; link para outro .md navega sem sair da página.
@@ -496,6 +665,7 @@ function montarPalco(){
   $('#conteudo').innerHTML = \`
     <div class="palco parado" id="palco">
       <video id="v" controls preload="metadata" playsinline></video>
+      <div class="legenda" id="legenda"></div>
       <div class="nav">
         <button id="ant" onclick="irVizinho(-1)">‹</button>
         <button id="prox" onclick="irVizinho(1)">›</button>
@@ -516,15 +686,17 @@ function montarPalco(){
       <header><h3>Transcrição</h3>
         <span class="tag" id="dica">clique numa fala para pular o vídeo</span></header>
       <div class="falas" id="falas">carregando…</div>
-    </div>\`;
+    </div>
+    \${blocoNota(null)}\`;
   palco = $('#palco'); vid = $('#v');
 
   // Ouvintes registrados uma vez só: o elemento agora atravessa várias aulas,
   // e registrar por aula empilharia uma cópia a cada troca.
   vid.addEventListener('loadedmetadata', () => {
-    // A faixa precisa ser ligada no JS: o atributo default sozinho nem sempre
-    // exibe a legenda. (Sem crases neste arquivo: encerram o template literal.)
-    for (const t of vid.textTracks) t.mode = 'showing';
+    // 'hidden', e não 'showing': a faixa continua marcando as falas do momento
+    // (é o que alimenta pintarLegenda), mas quem desenha é a div .legenda. Em
+    // 'showing' o navegador desenharia a dele por cima, em dobro.
+    esconderFaixas();
     // Retoma de onde parou. Só depois do metadata, porque antes disso não há
     // duração e o currentTime não gruda. Perto do fim recomeça do zero: quem
     // parou nos créditos não quer voltar para os créditos.
@@ -539,6 +711,10 @@ function montarPalco(){
     vid.defaultPlaybackRate = vid.playbackRate;
     localStorage.setItem(CHAVE_VEL, String(vid.playbackRate));
     mostrarVel(vid.playbackRate);
+    // Também entra na fila: senão a velocidade trocada pelo menu nativo valeria
+    // só neste aparelho, enquanto a trocada pelo chip viajaria para os outros.
+    if (vid.playbackRate !== Number(prefs.velocidade))
+      enfileirar({t:'pref', nome:'velocidade', valor: String(vid.playbackRate)});
   });
   // Autoplay: emenda na próxima aula quando esta termina. Só o fim natural
   // dispara 'ended' — trocar de aula no meio, não. Em tela cheia continua em
@@ -551,7 +727,17 @@ function montarPalco(){
     if (autoplay()) irVizinho(1); else pintarArvore();
   });
   palco.addEventListener('mousemove', mexeu);
+  // O menu nativo do player deixa religar a legenda; se religarem, volta para
+  // 'hidden' — desligar de vez ('disabled') continua valendo, porque aí não há
+  // fala corrente nenhuma e a div fica vazia.
+  vid.textTracks.addEventListener('change', esconderFaixas);
   mostrarAuto(); aplicarLeg();
+}
+
+function esconderFaixas(){
+  if (!vid) return;
+  for (const t of vid.textTracks) if (t.mode === 'showing') t.mode = 'hidden';
+  pintarLegenda();
 }
 
 /** Troca a aula em cartaz sem tocar na moldura. */
@@ -566,6 +752,11 @@ async function carregarVideo(r, tocar){
   Object.assign(faixa, {kind:'subtitles', srclang:'pt', label:'Português',
     src:'/legenda/'+id, default:true});
   vid.appendChild(faixa);
+  // 'hidden' já aqui: é o que faz o navegador ir buscar o .vtt sem desenhar
+  // nada. 'cuechange' é o que avisa a hora de trocar o texto na div.
+  faixa.track.mode = 'hidden';
+  faixa.track.addEventListener('cuechange', pintarLegenda);
+  $('#legenda').textContent = '';
   aRetomar = prog[chaveItem(id)]?.segundos ?? 0;
   vid.load();
   // Depois do load(): ele redefine playbackRate a partir de defaultPlaybackRate.
@@ -578,6 +769,7 @@ async function carregarVideo(r, tocar){
     (r.duration?\`<span>\${relogio(r.duration)}</span>\`:'') +
     \`<span>transcrição: \${r.transcribe_status}</span>\`;
   $('#barra').innerHTML = barraArquivo({id});
+  trocarNota(chaveItem(id));
   carregarCaminho({id});
   arrumarSetas(r);
   mexeu();
@@ -632,12 +824,21 @@ function salvarPos(agora){
   if (vid.ended || (isFinite(vid.duration) && t > vid.duration - 1)) return;
   if (!agora && Date.now() - ultimaGravacao < 5000) return;
   ultimaGravacao = Date.now();
-  const u = anotar(chaveItem(itemAtual), {segundos: t});
-  // Ao fechar a aba o fetch normal é cortado no meio; o beacon sobrevive.
-  if (agora && navigator.sendBeacon) navigator.sendBeacon(u);
-  else fetch(u, {method:'POST'}).catch(()=>{});
+  // A posição não precisa de viagem própria: entra na fila como o resto, e sai
+  // no mesmo lote da marcação e da anotação.
+  enfileirar({t:'progresso', chave: chaveItem(itemAtual), segundos: Number(t.toFixed(1))});
 }
-addEventListener('pagehide', () => salvarPos(true));
+
+// Ao fechar a aba o fetch normal é cortado no meio; o beacon sobrevive. Se ele
+// chegar, o lote vai ser reenviado na próxima abertura — e isso não é problema,
+// porque toda operação é "deixe assim", nunca "some mais um".
+addEventListener('pagehide', () => {
+  salvarPos(true);
+  guardarNota(true);
+  if (fila.length && navigator.sendBeacon)
+    navigator.sendBeacon('/api/sync',
+      new Blob([JSON.stringify({ops: fila})], {type: 'application/json'}));
+});
 
 /** Controles somem sozinhos enquanto o vídeo roda e o mouse está quieto. */
 let sumico;
@@ -648,17 +849,42 @@ function mexeu(){
   sumico = setTimeout(() => { if (vid && !vid.paused) palco.classList.remove('mexeu'); }, 2600);
 }
 
+// --- preferências do player -------------------------------------------------
+// Velocidade, autoplay e tamanho da legenda seguem a PESSOA, não o aparelho:
+// vão para o banco pela fila e voltam nas outras telas. O localStorage continua
+// aí como cache — é o que faz a página abrir já no jeito certo, antes mesmo de
+// a primeira resposta do servidor chegar.
+//
+// Quem mexeu por último manda. Para uma pessoa com um tablet e um PC isso é o
+// certo quase sempre; e como a aba repuxa ao voltar para o foco, as duas telas
+// convergem sem ninguém recarregar nada.
+
+/** Aplica o que veio do servidor, se for diferente do que este aparelho tem. */
+function aplicarPrefs(){
+  if (prefs.velocidade != null && Number(prefs.velocidade) !== velocidade())
+    definirVel(Number(prefs.velocidade), true);
+  if (prefs.autoplay != null && (prefs.autoplay === '1') !== autoplay()){
+    localStorage.setItem(CHAVE_AUTO, prefs.autoplay === '1' ? '1' : '0');
+    mostrarAuto();
+  }
+  if (prefs.legenda != null && Number(prefs.legenda) !== tamLegenda()){
+    localStorage.setItem(CHAVE_LEG, String(Number(prefs.legenda)));
+    aplicarLeg();
+  }
+}
+
 // --- velocidade -------------------------------------------------------------
-// Guardada no navegador para valer entre aulas e entre sessões: é preferência
-// de quem assiste, não propriedade do arquivo.
 const CHAVE_VEL = 'focus.velocidade';
 const VELS = [0.75, 1, 1.25, 1.5, 1.75, 2];
 function velocidade(){ const v = Number(localStorage.getItem(CHAVE_VEL)); return v > 0 ? v : 1; }
 function mostrarVel(v){ const c = $('#vel'); if(c) c.textContent = v + '×'; }
-function definirVel(v){
+/** 'deOutroAparelho' evita devolver para a fila o que acabou de chegar dela. */
+function definirVel(v, deOutroAparelho){
   localStorage.setItem(CHAVE_VEL, String(v));
   if (vid){ vid.defaultPlaybackRate = v; vid.playbackRate = v; }
   mostrarVel(v);
+  if (!deOutroAparelho && v !== Number(prefs.velocidade))
+    enfileirar({t:'pref', nome:'velocidade', valor: String(v)});
 }
 function ciclarVel(){
   const i = VELS.indexOf(vid ? vid.playbackRate : velocidade());
@@ -679,8 +905,10 @@ function mostrarAuto(){
     : 'Autoplay desligado: para no fim da aula';
 }
 function trocarAuto(){
-  localStorage.setItem(CHAVE_AUTO, autoplay() ? '0' : '1');
+  const ligado = !autoplay();
+  localStorage.setItem(CHAVE_AUTO, ligado ? '1' : '0');
   mostrarAuto();
+  enfileirar({t:'pref', nome:'autoplay', valor: ligado ? '1' : '0'});
 }
 
 // --- tamanho da legenda -----------------------------------------------------
@@ -691,15 +919,29 @@ const LEGS = [15, 18, 22, 27];
 function tamLegenda(){ const v = Number(localStorage.getItem(CHAVE_LEG)); return LEGS.includes(v) ? v : 18; }
 function aplicarLeg(){
   const v = tamLegenda();
-  const est = $('#estcue');
-  if (est) est.textContent = 'video::cue{font-size:' + v + 'px}';
+  // Na raiz, e não no palco: a propriedade herda, e continua valendo quando o
+  // palco vai para tela cheia.
+  document.documentElement.style.setProperty('--tamleg', v + 'px');
   const c = $('#leg');
   if (c){ c.textContent = 'Aa ' + v; c.title = 'Tamanho da legenda (' + v + 'px) — igual em tela cheia'; }
 }
+
+/** Põe na div a fala do momento, dentro de uma <span> para o fundo colar no texto. */
+function pintarLegenda(){
+  const el = $('#legenda');
+  if (!el || !vid) return;
+  const textos = [];
+  for (const t of vid.textTracks)
+    if (t.mode !== 'disabled') for (const c of t.activeCues ?? []) textos.push(c.text);
+  const linhas = textos.join('\\n').split('\\n').map(l => l.trim()).filter(Boolean);
+  el.innerHTML = linhas.length ? '<span>' + linhas.map(esc).join('<br>') + '</span>' : '';
+}
+
 function ciclarLeg(){
-  const i = LEGS.indexOf(tamLegenda());
-  localStorage.setItem(CHAVE_LEG, String(LEGS[(i+1) % LEGS.length]));
+  const v = LEGS[(LEGS.indexOf(tamLegenda()) + 1) % LEGS.length];
+  localStorage.setItem(CHAVE_LEG, String(v));
   aplicarLeg();
+  enfileirar({t:'pref', nome:'legenda', valor: String(v)});
 }
 aplicarLeg();
 
@@ -736,7 +978,15 @@ function destacar(){
   const cx = $('#falas');
   cx.querySelectorAll('.fala.on').forEach(e => e.classList.remove('on'));
   const el = cx.querySelector(\`.fala[data-i="\${i}"]\`);
-  if (el){ el.classList.add('on'); el.scrollIntoView({block:'nearest', behavior:'smooth'}); }
+  if (!el) return;
+  el.classList.add('on');
+  // scrollIntoView rolaria TODOS os ancestrais roláveis — inclusive o #conteudo,
+  // que arrasta a página para baixo e tira o vídeo da tela a cada fala nova.
+  // Aqui rola só a caixa da transcrição, levando a fala corrente para o topo.
+  cx.scrollTo({
+    top: cx.scrollTop + el.getBoundingClientRect().top - cx.getBoundingClientRect().top - 6,
+    behavior: 'smooth',
+  });
 }
 
 function pintarAcoes(){
@@ -785,7 +1035,20 @@ async function rodar(nome){
   carregar();
 }
 
-carregar();
+// A fila sobrevive ao fechar a aba: o que não foi confirmado está no
+// localStorage e sai assim que houver rede.
+fila = lerFila();
+carregar().then(() => sincronizarFila());
+
 // Atualiza sozinho, mas sem estragar a leitura: só quando há tarefa rodando.
 setInterval(() => { if (dados?.tarefas.some(t=>t.rodando)) carregar(); }, 8000);
+
+// --- convergência entre aparelhos -------------------------------------------
+// Voltar para a aba é o momento exato em que se quer ver o que o outro aparelho
+// fez: você marcou no tablet, pegou o PC, e a árvore já está certa. O laço de
+// 30s cobre a aba que fica aberta parada, e o 'online' cobre a rede voltando.
+addEventListener('visibilitychange', () => { if (!document.hidden) sincronizarFila(true); });
+addEventListener('focus', () => sincronizarFila(true));
+addEventListener('online', () => sincronizarFila(true));
+setInterval(() => { if (!document.hidden) sincronizarFila(true); }, 30000);
 </script>`;
