@@ -14,13 +14,28 @@ export const PAGINA = `
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>focus-scrap</title>
 <style>
+ /* Os 12 temas só trocam bg/card/linha/txt/fraco/ac/realce — ok/erro/pend ficam
+    fixos de propósito (sempre verde/vermelho/âmbar), pra não ter que validar
+    contraste de cor de status em 12 paletas diferentes. */
  :root{
    --bg:#0f1115; --card:#171a21; --linha:#242833; --txt:#e6e8ee; --fraco:#8b93a7;
    --ok:#3fb950; --erro:#f85149; --pend:#d29922; --ac:#4c8dff; --realce:#4c8dff22;
  }
- @media (prefers-color-scheme:light){
-   :root{--bg:#f6f7f9;--card:#fff;--linha:#e3e6ec;--txt:#1a1d23;--fraco:#5c6472;--realce:#4c8dff1a}
- }
+ /* claros */
+ :root[data-tema="papel"]{--bg:#f6f7f9;--card:#fff;--linha:#e3e6ec;--txt:#1a1d23;--fraco:#5c6472;--ac:#4c8dff;--realce:#4c8dff1a}
+ :root[data-tema="neve"]{--bg:#ffffff;--card:#f7f9fc;--linha:#e6eaf2;--txt:#14181f;--fraco:#626d80;--ac:#2f6fed;--realce:#2f6fed17}
+ :root[data-tema="menta"]{--bg:#f1f8f5;--card:#ffffff;--linha:#dbeae3;--txt:#17251d;--fraco:#5a7367;--ac:#0f9d64;--realce:#0f9d641a}
+ :root[data-tema="lavanda"]{--bg:#f7f5fb;--card:#ffffff;--linha:#e6e0f0;--txt:#211c2e;--fraco:#6d6480;--ac:#7c5cff;--realce:#7c5cff1a}
+ /* ocres */
+ :root[data-tema="pergaminho"]{--bg:#f6ecd9;--card:#fffaf0;--linha:#e6d3ac;--txt:#3b2f1e;--fraco:#8a7658;--ac:#a9682f;--realce:#a9682f1c}
+ :root[data-tema="ambar"]{--bg:#f2e0b8;--card:#fbf1d9;--linha:#ddc17f;--txt:#362a13;--fraco:#8a7238;--ac:#b5750f;--realce:#b5750f1e}
+ :root[data-tema="terracota"]{--bg:#f2ded0;--card:#fbf0e7;--linha:#e0bda3;--txt:#3a2418;--fraco:#8c6a56;--ac:#c1502e;--realce:#c1502e1c}
+ :root[data-tema="tabaco"]{--bg:#e6d0ab;--card:#f2e4c8;--linha:#c9ab7c;--txt:#2f2311;--fraco:#7a6640;--ac:#9c5a1e;--realce:#9c5a1e22}
+ /* escuros */
+ :root[data-tema="grafite"]{--bg:#0f1115;--card:#171a21;--linha:#242833;--txt:#e6e8ee;--fraco:#8b93a7;--ac:#4c8dff;--realce:#4c8dff22}
+ :root[data-tema="meia-noite"]{--bg:#0a0e1a;--card:#121a2e;--linha:#1e2942;--txt:#e3e8f7;--fraco:#7c88ac;--ac:#5b8cff;--realce:#5b8cff24}
+ :root[data-tema="nanquim"]{--bg:#000000;--card:#141414;--linha:#2a2a2a;--txt:#ededed;--fraco:#9a9a9a;--ac:#5f96f5;--realce:#5f96f522}
+ :root[data-tema="musgo"]{--bg:#0e1410;--card:#161f19;--linha:#253128;--txt:#dee9e0;--fraco:#86998c;--ac:#4fbf78;--realce:#4fbf7822}
  *{box-sizing:border-box}
  html,body{height:100%}
  body{margin:0;background:var(--bg);color:var(--txt);
@@ -167,12 +182,30 @@ export const PAGINA = `
  .erro{color:var(--erro)}
 </style>
 
+<script>
+/* Roda antes do <header> pra evitar o flash do tema errado: o atributo
+   data-tema já está no <html> quando o navegador pinta a primeira vez. */
+const TEMAS = [
+  ['Claros', [['papel','Papel'], ['neve','Neve'], ['menta','Menta'], ['lavanda','Lavanda']]],
+  ['Ocres', [['pergaminho','Pergaminho'], ['ambar','Âmbar'], ['terracota','Terracota'], ['tabaco','Tabaco']]],
+  ['Escuros', [['grafite','Grafite'], ['meia-noite','Meia-noite'], ['nanquim','Nanquim'], ['musgo','Musgo']]],
+];
+const temaSalvo = () => localStorage.getItem('focus-tema')
+  || (matchMedia('(prefers-color-scheme:light)').matches ? 'papel' : 'grafite');
+document.documentElement.dataset.tema = temaSalvo();
+function mudarTema(chave){
+  document.documentElement.dataset.tema = chave;
+  localStorage.setItem('focus-tema', chave);
+}
+</script>
+
 <header>
   <h1>focus-scrap</h1>
   <select id="combo" onchange="escolher(this.value)"></select>
   <span style="flex:1"></span>
   <span class="tag" id="fila" style="color:var(--pend)"></span>
   <span class="tag" id="resumo"></span>
+  <select id="tema" onchange="mudarTema(this.value)"></select>
   <button class="sec" onclick="carregar()">Atualizar</button>
 </header>
 
@@ -201,6 +234,11 @@ const haTempo = ms => { if(ms==null) return 'nunca';
 
 let dados = null, discAtual = null, itemAtual = null, falas = [], vid = null;
 let palco = null, ordem = [], prog = {}, notas = {}, prefs = {}, restaurou = false;
+
+$('#tema').innerHTML = TEMAS.map(([grupo, itens]) => \`<optgroup label="\${grupo}">\${
+  itens.map(([chave, nome]) => \`<option value="\${chave}">\${nome}</option>\`).join('')
+}</optgroup>\`).join('');
+$('#tema').value = document.documentElement.dataset.tema;
 
 async function carregar(){
   dados = await (await fetch('/api/tudo')).json();
