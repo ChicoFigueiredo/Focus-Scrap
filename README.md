@@ -329,17 +329,17 @@ foco nunca é sobrescrito por baixo de quem está digitando.
 ## Assistir de fora de casa
 
 **https://focus.chicofigueiredo.com.br** — usuário `chico`, senha guardada no
-`.htpasswd` do droplet. Serve para assistir do tablet, de qualquer rede.
+`.htpasswd` da VPS. Serve para assistir do tablet, de qualquer rede.
 
 O painel continua rodando **só aqui**, em `127.0.0.1:17788`. Nada é copiado para
 o servidor: o vídeo sai do disco de casa na hora em que você aperta play. O que
 existe lá fora é um cano.
 
 ```
-tablet ──HTTPS──▶ nginx no droplet ──▶ 127.0.0.1:17788 (ponta do túnel)
+tablet ──HTTPS──▶ nginx na VPS (SP) ──▶ 127.0.0.1:17788 (ponta do túnel)
                   (senha, TLS)               ▲
                                              │ túnel SSH reverso
-                        WSL ── ssh -R ───────┘   (focus-tunel.service)
+                        casa ── ssh -R ──────┘   (focus-tunel.service)
                          │
                          └─ painel em 127.0.0.1:17788 ── acervo em /mnt/e
 ```
@@ -361,15 +361,20 @@ corrente elo por elo, e o porquê de cada decisão.
 
 ```bash
 infra/remote/verificar.sh              # o tablet não abre — onde quebrou?
-systemctl --user status focus-tunel
+systemctl --user status focus-tunel focus-painel
 ```
+
+O painel e o túnel sobem sozinhos: `focus-painel.service` e
+`focus-tunel.service`, instalados pelo `infra/remote/4-servico-local.sh`. Com o
+`linger` ligado (`sudo loginctl enable-linger $USER`), voltam no boot sem
+ninguém abrir terminal.
 
 | Onde | O quê |
 |---|---|
-| DNS | `*.chicofigueiredo.com.br` → `167.99.225.233` (nameservers na DigitalOcean, não no registro.br) |
-| Droplet | usuário `tunel`, sem shell, chave restrita a encaminhar só a 17788 |
-| Droplet | site do nginx + senha bcrypt + cert do certbot |
-| WSL | `~/.ssh/focus_tunel`, e o `focus-tunel.service` de usuário |
+| DNS | `*.chicofigueiredo.com.br` → `191.252.219.183` (curinga: o nome resolve sem registro próprio) |
+| VPS (Locaweb, SP) | usuário `tunel`, sem shell, chave restrita a encaminhar só a 17788 |
+| VPS | site do nginx + senha bcrypt + cert do certbot |
+| Aqui | `~/.ssh/focus_tunel`, e as unidades `focus-tunel` / `focus-painel` |
 
 **O que NÃO dá para fazer de fora:** `/api/run`, `/api/requeue`, `/api/revelar`,
 `/api/abrir` e `/api/sincronizar` respondem 403 no nginx. Do tablet dá para

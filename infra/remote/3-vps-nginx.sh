@@ -1,16 +1,16 @@
 #!/bin/bash
-# Passo 3 (roda daqui, age no droplet) — TLS, senha e proxy para a ponta do túnel.
+# Passo 3 (roda daqui, age na VPS) — TLS, senha e proxy para a ponta do túnel.
 #
-#   ./3-droplet-nginx.sh              # sorteia a senha e mostra no fim
-#   ./3-droplet-nginx.sh 'minha-senha' # usa a que você passar
+#   ./3-vps-nginx.sh              # sorteia a senha e mostra no fim
+#   ./3-vps-nginx.sh 'minha-senha' # usa a que você passar
 #
-# Este droplet já servia outros sites quando isto foi escrito, então o script é
+# Esta VPS já servia outros sites quando isto foi escrito, então o script é
 # aditivo por princípio: cria um arquivo novo em sites-available, liga em
 # sites-enabled e passa por `nginx -t` antes de recarregar. Não edita nem lê
 # configuração de outro site.
 #
-# Pré-requisitos no droplet: nginx, certbot com plugin nginx, apache2-utils
-# (htpasswd). Pré-requisito no DNS: $DOMINIO já resolvendo para o IP do droplet.
+# Pré-requisitos na VPS: nginx, certbot com plugin nginx, apache2-utils
+# (htpasswd). Pré-requisito no DNS: $DOMINIO já resolvendo para o IP da VPS.
 set -euo pipefail
 cd "$(dirname "$0")" && source ./config.sh
 
@@ -18,15 +18,15 @@ SENHA="${1:-$(printf 'focus-%s-%s-%s' "$(openssl rand -hex 3)" "$(openssl rand -
 
 echo "conferindo o DNS de $DOMINIO…"
 IP_DOM=$(getent hosts "$DOMINIO" | awk '{print $1}' | head -1)
-IP_DROP=$(ssh "$DROPLET" 'curl -s -4 ifconfig.me')
-[[ "$IP_DOM" == "$IP_DROP" ]] || {
-  echo "  $DOMINIO → ${IP_DOM:-nada} mas o droplet é $IP_DROP"
+IP_VPS=$(ssh "$VPS" 'curl -s -4 ifconfig.me')
+[[ "$IP_DOM" == "$IP_VPS" ]] || {
+  echo "  $DOMINIO → ${IP_DOM:-nada} mas a VPS é $IP_VPS"
   echo "  Acerte o DNS antes: o Let's Encrypt valida batendo na porta 80 deste nome."
   exit 1
 }
 echo "  ok: $IP_DOM"
 
-ssh "$DROPLET" "DOMINIO='$DOMINIO' PORTA='$PORTA' USUARIO='$USUARIO_PAINEL' \
+ssh "$VPS" "DOMINIO='$DOMINIO' PORTA='$PORTA' USUARIO='$USUARIO_PAINEL' \
                 SENHA='$SENHA' EMAIL='$EMAIL_CERT' BLOQ='$ROTAS_BLOQUEADAS' bash -s" <<'REMOTO'
 set -euo pipefail
 
@@ -92,4 +92,4 @@ echo " https://$DOMINIO"
 echo " usuário: $USUARIO_PAINEL"
 echo " senha:   $SENHA"
 echo "───────────────────────────────────────────────"
-echo "Anote a senha: ela só existe em bcrypt no droplet daqui para a frente."
+echo "Anote a senha: ela só existe em bcrypt na VPS daqui para a frente."

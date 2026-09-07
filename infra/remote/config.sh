@@ -2,16 +2,27 @@
 # Um lugar só para as decisões. Os quatro passos leem daqui — trocar de domínio
 # ou de servidor é mexer neste arquivo, e nada mais.
 
-# Endereço público do painel. Precisa resolver para o IP do droplet ANTES de
+# Endereço público do painel. Precisa resolver para o IP da VPS ANTES de
 # rodar o passo 3: o Let's Encrypt confirma o domínio batendo na porta 80.
+#
+# O nome é SEM hífen (chicofigueiredo, não chico-figueiredo) porque a zona
+# chicofigueiredo.com.br tem DNS curinga para a VPS — este nome já resolve sem
+# cadastrar registro nenhum. O hífen aparece só no nome de administração,
+# ssh.chico-figueiredo.com.br, que é outra zona e cai na mesma máquina.
 DOMINIO=focus.chicofigueiredo.com.br
 
-# Acesso administrativo ao droplet — usado só na instalação (passos 2 e 3).
-DROPLET=root@ssh.lojapopcorn.com.br
+# Acesso administrativo à VPS (Locaweb, São Paulo) — usado só na instalação
+# (passos 2 e 3).
+VPS=root@ssh.chico-figueiredo.com.br
 
 # Para onde o túnel disca no dia a dia. Mesmo servidor, outro usuário: o do
 # dia a dia é o 'tunel', que não tem shell.
-TUNEL_HOST=ssh.lojapopcorn.com.br
+#
+# ATENÇÃO: o passo 2 SOBRESCREVE o authorized_keys deste usuário. A mesma VPS
+# hospeda os túneis do ia-monitor ('tunel-ia') e do ensinantes-digitais
+# ('tunel-ensinantes'); apontar isto para um deles derrubaria aquele túnel em
+# silêncio. Cada painel com o seu usuário e a sua porta.
+TUNEL_HOST=ssh.chico-figueiredo.com.br
 TUNEL_USER=tunel
 
 # A porta do painel. Vale dos dois lados do túnel e TEM de bater com o

@@ -50,7 +50,7 @@ else
 fi
 
 echo
-echo "3. o túnel, daqui até o droplet"
+echo "3. o túnel, daqui até a VPS"
 if [[ "$(systemctl --user is-active focus-tunel 2>/dev/null)" == "active" ]]; then
   ok "focus-tunel.service de pé (reinícios: $(systemctl --user show focus-tunel -p NRestarts --value))"
 else
@@ -59,12 +59,12 @@ else
 fi
 
 echo
-echo "4. a ponta do túnel, no droplet"
-PONTA=$(ssh -o BatchMode=yes -o ConnectTimeout=10 "$DROPLET" \
+echo "4. a ponta do túnel, na VPS"
+PONTA=$(ssh -o BatchMode=yes -o ConnectTimeout=10 "$VPS" \
   "curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:$PORTA/" 2>/dev/null || echo erro)
 [[ "$PONTA" == "200" ]] \
-  && ok "o droplet enxerga o painel (HTTP $PONTA)" \
-  || { nao "o droplet não enxerga o painel (HTTP $PONTA)"; dica "se 1 a 3 estão ok, o túnel caiu agora — reinicie o serviço"; }
+  && ok "a VPS enxerga o painel (HTTP $PONTA)" \
+  || { nao "a VPS não enxerga o painel (HTTP $PONTA)"; dica "se 1 a 3 estão ok, o túnel caiu agora — reinicie o serviço"; }
 
 echo
 echo "5. a porta pública"
